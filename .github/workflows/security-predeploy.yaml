@@ -23,11 +23,6 @@ on:
         required: false
         type: string
         description: Helm chart version
-      helm_release_namespace:
-        required: false
-        type: string
-        default: default
-        description: Helm release namespace
       deploy_env:
         required: true
         type: string
@@ -219,10 +214,10 @@ jobs:
       - name: Generate Kubernetes Manifest files with Helm Template
         if: "${{ inputs.helm_values_file != '' }}"
         run: |
-          helm template -f ${{ inputs.helm_values_file }} --namespace ${{ inputs.helm_release_namespace }} \
+          helm template -f ${{ inputs.helm_values_file }} \
             ${{ inputs.github_repo_name }}-${{ inputs.deploy_env }} \
             ${{ inputs.helm_chart_name }} --version ${{ inputs.helm_chart_version }} \
-            > iac/${{ inputs.github_repo_name }}-${{ inputs.deploy_env }}-manifest.yaml
+            > ${{ inputs.github_repo_name }}-manifest.yaml
       - name: Generate Trivy IaC Vulnerability Report
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -236,7 +231,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-iac-report
-          path: ${{ inputs.trivy_iac_report_filename }}
+          path: |
+            ${{ inputs.trivy_iac_report_filename }}
+            ${{ inputs.github_repo_name }}-manifest.yaml
           retention-days: ${{ inputs.report_retention_days }}
 
   trivy-iac-security-gate:
@@ -249,10 +246,10 @@ jobs:
       - name: Generate Kubernetes Manifest files with Helm Template
         if: "${{ inputs.helm_values_file != '' }}"
         run: |
-          helm template -f ${{ inputs.helm_values_file }} --namespace ${{ inputs.helm_release_namespace }} \
+          helm template -f ${{ inputs.helm_values_file }} \
             ${{ inputs.github_repo_name }}-${{ inputs.deploy_env }} \
             ${{ inputs.helm_chart_name }} --version ${{ inputs.helm_chart_version }} \
-            > iac/${{ inputs.github_repo_name }}-${{ inputs.deploy_env }}-manifest.yaml
+            > ${{ inputs.github_repo_name }}-manifest.yaml
       - name: Trivy IaC Vulnerability Fail Gate
         uses: aquasecurity/trivy-action@0.28.0
         with:
