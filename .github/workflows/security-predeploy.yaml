@@ -187,6 +187,8 @@ jobs:
           hide-progress: true
           output: ${{ env.TRIVY_SCA_OUTPUT_FILENAME }}
           exit-code: 1
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: true
       - name: Publish Trivy SCA Output to Summary
         if: always()
         run: |
@@ -262,6 +264,8 @@ jobs:
           hide-progress: true
           output: ${{ env.TRIVY_IAC_OUTPUT_FILENAME }}
           exit-code: 1
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: true
       - name: Publish Trivy IaC Output to Summary
         if: always()
         run: |
