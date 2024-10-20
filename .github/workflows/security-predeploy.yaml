@@ -166,7 +166,7 @@ jobs:
           scan-ref: .
           scanners: 'vuln,license'
           format: json
-          trivyignores: .trivyignore.yaml
+          trivyignores: .trivyignore
           output: ${{ inputs.trivy_sca_report_filename }}
       - name: Upload Trivy SCA Report
         uses: actions/upload-artifact@v4
@@ -188,7 +188,7 @@ jobs:
           scanners: 'vuln,license'
           severity: ${{ inputs.trivy_sca_severity }}
           format: table
-          trivyignores: .trivyignore.yaml
+          trivyignores: 4
           hide-progress: true
           output: ${{ env.TRIVY_SCA_OUTPUT_FILENAME }}
           exit-code: 1
@@ -230,7 +230,7 @@ jobs:
           scan-ref: .
           scanners: 'misconfig,secret'
           format: json
-          trivyignores: .trivyignore.yaml
+          trivyignores: .trivyignore
           output: ${{ inputs.trivy_iac_report_filename }}
       - name: Upload Trivy IaC Report
         uses: actions/upload-artifact@v4
@@ -261,7 +261,7 @@ jobs:
           scanners: 'misconfig,secret'
           severity: ${{ inputs.trivy_iac_severity }}
           format: table
-          trivyignores: .trivyignore.yaml
+          trivyignores: .trivyignore
           hide-progress: true
           output: ${{ env.TRIVY_IAC_OUTPUT_FILENAME }}
           exit-code: 1
