@@ -85,10 +85,6 @@ on:
         type: number
         default: 1000000
         description: DefectDojo info findinds threshold
-      defectdojo_engagement_name:
-        required: true
-        type: string
-        description: DefectDojo engagement name
       defectdojo_product_name:
         required: true
         type: string
@@ -237,25 +233,32 @@ jobs:
           defectdojo-product: ${{ inputs.defectdojo_product_name }}
           defectdojo-environment-type: ${{ inputs.deploy_env }}
           defectdojo-scan-type: ${{ matrix.defectdojo_scan_type }}
-          defectdojo-engagement-name: ${{ inputs.defectdojo_engagement_name }}
+          defectdojo-engagement-name: ${{ matrix.defectdojo_engagement_name }}
           scan-results-file-name: ${{ matrix.defectdojo_report_file }}
     strategy:
       matrix:
         include:
           - defectdojo_report_file: ${{ inputs.sonarqube_report_filename }}
             defectdojo_scan_type: SonarQube Scan
+            defectdojo_engagement_name: sonarqube
           - defectdojo_report_file: ${{ inputs.trivy_sca_report_filename }}
             defectdojo_scan_type: Trivy Scan
+            defectdojo_engagement_name: trivy-sca
           - defectdojo_report_file: ${{ inputs.trivy_iac_report_filename }}
             defectdojo_scan_type: Trivy Scan
+            defectdojo_engagement_name: trivy-iac
           - defectdojo_report_file: ${{ inputs.trivy_image_report_filename }}
             defectdojo_scan_type: Trivy Scan
+            defectdojo_engagement_name: trivy-image
           - defectdojo_report_file: ${{ inputs.zap_baseline_report_filename }}
             defectdojo_scan_type: ZAP Scan
+            defectdojo_engagement_name: zap-baseline
           - defectdojo_report_file: ${{ inputs.zap_api_report_filename }}
             defectdojo_scan_type: ZAP Scan
+            defectdojo_engagement_name: zap-api
           - defectdojo_report_file: ${{ inputs.zap_full_report_filename }}
             defectdojo_scan_type: ZAP Scan
+            defectdojo_engagement_name: zap-full
 
   defectdojo-findings:
     runs-on: ubuntu-latest
