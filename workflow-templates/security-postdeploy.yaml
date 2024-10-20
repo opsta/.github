@@ -272,7 +272,7 @@ jobs:
           defectdojo-product: ${{ inputs.defectdojo_product_name }}
 
   defectdojo:
-    uses: opsta/opsta-line-bot/.github/workflows/workflow-defectdojo-security-gate.yaml@main
+    uses: opsta/.github/workflow-templates/defectdojo-security-gate.yaml@main
     if: always()
     needs:
       - defectdojo-import
