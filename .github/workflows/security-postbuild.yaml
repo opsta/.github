@@ -70,6 +70,8 @@ jobs:
           hide-progress: true
           output: ${{ env.TRIVY_IMAGE_OUTPUT_FILENAME }}
           exit-code: 1
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: true
       - name: Publish Trivy Image Output to Summary
         if: always()
         run: |
