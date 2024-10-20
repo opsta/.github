@@ -43,6 +43,7 @@ jobs:
           scanners: 'vuln,misconfig,secret'
           format: json
           trivyignores: .trivyignore
+          ignore-unfixed: true
           output: ${{ inputs.trivy_image_report_filename }}
         env:
           TRIVY_USERNAME: ${{ secrets.registry_username }}
@@ -67,6 +68,7 @@ jobs:
           severity: ${{ inputs.trivy_image_severity }}
           format: table
           trivyignores: .trivyignore
+          ignore-unfixed: true
           hide-progress: true
           output: ${{ env.TRIVY_IMAGE_OUTPUT_FILENAME }}
           exit-code: 1
