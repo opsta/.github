@@ -30,9 +30,6 @@ on:
         type: string
         description: GitHub repository name to create release
     secrets:
-      github_token:
-        required: true
-        description: GitHub token for tagging repository
       registry_username:
         required: true
         description: Container registry username
@@ -53,7 +50,7 @@ jobs:
         id: semver
         uses: anothrNick/github-tag-action@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.github_token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WITH_V: true
           DRY_RUN: true
           DEFAULT_BUMP: ${{ inputs.bump }}
@@ -73,7 +70,7 @@ jobs:
         run: crane copy ${{ inputs.image_name }}:${{ inputs.image_tag_source }} ${{ inputs.image_name }}:${{ steps.semver.outputs.new_tag }}
       - name: Create GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.github_token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ steps.semver.outputs.new_tag }}" \
             --repo="${{ inputs.github_repo_name }}" \
