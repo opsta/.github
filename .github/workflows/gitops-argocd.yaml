@@ -52,7 +52,7 @@ on:
 
 jobs:
   # Commit to Git for ArgoCD
-  gitops-commit:
+  git-commit:
     runs-on: ubuntu-latest
     # run after all of needs are complete (whether skipped or success)
     if: ${{ !cancelled() && !failure() }}
@@ -81,7 +81,7 @@ jobs:
           message: "Update Image Version to ${{ inputs.helm_image_tag_value }}"
 
   # ArgoCD Sync
-  gitops-sync:
+  argocd-sync:
     runs-on: ubuntu-latest
     container:
       image: quay.io/argoproj/argocd:v2.12.4
