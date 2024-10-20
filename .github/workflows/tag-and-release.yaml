@@ -17,10 +17,6 @@ on:
         type: string
         default: edge
         description: Image source tag
-      image_tag_dest:
-        required: true
-        type: string
-        description: Image destination tag to copy and push
       image_name:
         required: true
         type: string
