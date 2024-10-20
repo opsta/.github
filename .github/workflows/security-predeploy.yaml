@@ -188,7 +188,7 @@ jobs:
           scanners: 'vuln,license'
           severity: ${{ inputs.trivy_sca_severity }}
           format: table
-          trivyignores: 4
+          trivyignores: .trivyignore
           hide-progress: true
           output: ${{ env.TRIVY_SCA_OUTPUT_FILENAME }}
           exit-code: 1
