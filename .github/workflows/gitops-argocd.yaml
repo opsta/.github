@@ -3,6 +3,18 @@ name: Reusable GitOps with ArgoCD workflow
 on:
   workflow_call:
     inputs:
+      image_registry:
+        required: true
+        type: string
+        description: Image registry eg. ghcr.io or docker.io
+      image_repo:
+        required: true
+        type: string
+        description: Image repository name to be put after image_registry
+      image_tag:
+        required: true
+        type: string
+        description: Image tag version
       helm_values_file:
         required: true
         type: string
@@ -45,6 +57,18 @@ jobs:
     # run after all of needs are complete (whether skipped or success)
     if: ${{ !cancelled() && !failure() }}
     steps:
+      - name: Check if container image tag exists
+        uses: tyriis/docker-image-tag-exists@v2.1.0
+        id: check-tag
+        with:
+          registry: ${{ inputs.image_registry }}
+          repository: ${{ inputs.image_repo }}
+          tag: ${{ inputs.image_tag }}
+      - name: Fail if container image tag not exists
+        if: steps.check-tag.outputs.tag == 'not found'
+        run: |
+          echo "::error title=Container image tag not found::Container image tag ${{ inputs.image_tag }} does not exist"
+          exit 1
       - name: Checkout
         uses: actions/checkout@v4
       - name: Update Image Version in Helm Value file
