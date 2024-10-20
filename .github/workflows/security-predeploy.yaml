@@ -216,7 +216,7 @@ jobs:
       - name: Generate Kubernetes Manifest files with Helm Template
         if: "${{ inputs.helm_values_file != '' }}"
         run: |
-          helm template -f ${{ inputs.helm_values_file }} \
+          helm template -f ${{ inputs.helm_values_file }} --namespace not-default \
             ${{ inputs.github_repo_name }}-${{ inputs.deploy_env }} \
             ${{ inputs.helm_chart_name }} --version ${{ inputs.helm_chart_version }} \
             > ${{ inputs.github_repo_name }}-manifest.yaml
@@ -248,7 +248,7 @@ jobs:
       - name: Generate Kubernetes Manifest files with Helm Template
         if: "${{ inputs.helm_values_file != '' }}"
         run: |
-          helm template -f ${{ inputs.helm_values_file }} \
+          helm template -f ${{ inputs.helm_values_file }} --namespace not-default \
             ${{ inputs.github_repo_name }}-${{ inputs.deploy_env }} \
             ${{ inputs.helm_chart_name }} --version ${{ inputs.helm_chart_version }} \
             > ${{ inputs.github_repo_name }}-manifest.yaml
