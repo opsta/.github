@@ -1,0 +1,75 @@
+name: Reusable GitOps with ArgoCD workflow
+
+on:
+  workflow_call:
+    inputs:
+      helm_values_file:
+        required: true
+        type: string
+        description: Helm values file path
+      helm_image_tag_path:
+        required: false
+        type: string
+        default: image.tag
+        description: Helm image tag property path
+      helm_image_tag_value:
+        required: true
+        type: string
+        description: Helm image tag value
+      helm_values_branch:
+        required: false
+        type: string
+        default: main
+        description: Helm value file branch name
+      argocd_project:
+        required: false
+        type: string
+        default: default
+        description: ArgoCD project
+      argocd_app_name:
+        required: true
+        type: string
+        description: ArgoCD application name with Kubernetes namespace eg. demo/app-a
+    secrets:
+      argocd_server:
+        required: true
+        description: ArgoCD URL eg. https://argocd.example.com
+      argocd_auth_token:
+        required: true
+        description: ArgoCD authentication token
+
+jobs:
+  # Commit to Git for ArgoCD
+  gitops-commit:
+    runs-on: ubuntu-latest
+    # run after all of needs are complete (whether skipped or success)
+    if: ${{ !cancelled() && !failure() }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Update Image Version in Helm Value file
+        uses: fjogeleit/yaml-update-action@main
+        with:
+          valueFile: ${{ inputs.helm_values_file }}
+          propertyPath: ${{ inputs.helm_image_tag_path }}
+          value: ${{ inputs.helm_image_tag_value }}
+          branch: ${{ inputs.helm_values_branch }}
+          message: "Update Image Version to ${{ inputs.helm_image_tag_value }}"
+
+  # ArgoCD Sync
+  gitops-sync:
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/argoproj/argocd:v2.12.4
+      env:
+        ARGOCD_SERVER: ${{ secrets.argocd_server }}
+        ARGOCD_AUTH_TOKEN: ${{ secrets.argocd_auth_token }}
+    # run after all of needs are complete (whether skipped or success)
+    if: ${{ !cancelled() && !failure() }}
+    needs:
+      - gitops-commit
+    steps:
+      - name: Sync ArgoCD
+        run: |
+          argocd app sync --project ${{ inputs.argocd_project }} ${{ inputs.argocd_app_name }}
+          argocd app wait --health ${{ inputs.argocd_app_name }}
