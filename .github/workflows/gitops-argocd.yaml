@@ -91,7 +91,7 @@ jobs:
     # run after all of needs are complete (whether skipped or success)
     if: ${{ !cancelled() && !failure() }}
     needs:
-      - gitops-commit
+      - git-commit
     steps:
       - name: Sync ArgoCD
         run: |
