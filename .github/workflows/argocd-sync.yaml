@@ -10,6 +10,7 @@ on:
       runner:
         type: string
         default: ubuntu-latest
+        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
       argocd_server:
         type: string
         required: true
@@ -21,9 +22,11 @@ on:
       wait_timeout:
         type: string
         default: "300"
+        description: Max seconds to wait per app for Synced + Healthy before failing.
       poll_interval:
         type: string
         default: "10"
+        description: Seconds between status polls while waiting.
       tls_insecure:
         type: boolean
         default: false
@@ -31,6 +34,7 @@ on:
     secrets:
       argocd_token:
         required: true
+        description: ArgoCD API auth token (bearer) for the refresh and status calls.
 
 jobs:
   sync:

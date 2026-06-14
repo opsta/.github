@@ -15,6 +15,7 @@ on:
       runner:
         type: string
         default: ubuntu-latest
+        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
       services:
         type: string
         required: true
@@ -42,9 +43,11 @@ on:
       gitops_branch:
         type: string
         default: main
+        description: Branch of the GitOps repo to check out, commit, and push the tag bump to.
       commit_message:
         type: string
         default: ""
+        description: Commit message for the tag bump; defaults to a generated 'ci deploy <tag> [skip ci]' message when empty.
 
 jobs:
   deploy:

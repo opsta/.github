@@ -18,6 +18,7 @@ on:
       service:
         type: string
         required: true
+        description: Service name being built; used to name the kaniko Job and secret.
       image:
         type: string
         required: true
@@ -25,6 +26,7 @@ on:
       image_tag:
         type: string
         required: true
+        description: Tag to push the built image as (kaniko --destination tag).
       git_repo:
         type: string
         required: true
@@ -40,6 +42,7 @@ on:
       dockerfile:
         type: string
         default: Dockerfile
+        description: Dockerfile path (relative to context_sub_path) kaniko builds.
       build_args:
         type: string
         default: ""
@@ -47,18 +50,23 @@ on:
       build_namespace:
         type: string
         default: ci
+        description: Kubernetes namespace where the kaniko Job and git-credential secret are created.
       kaniko_image:
         type: string
         default: gcr.io/kaniko-project/executor:v1.23.2
+        description: kaniko executor image to run the build with.
       kubectl_version:
         type: string
         default: v1.31.4
+        description: kubectl release version downloaded onto the runner to submit the Job.
       registry_insecure:
         type: boolean
         default: true
+        description: Push over HTTP / skip registry TLS verify (adds kaniko --insecure --skip-tls-verify).
       build_timeout:
         type: string
         default: "600s"
+        description: kubectl wait timeout for the kaniko Job to complete (e.g. 600s).
     secrets:
       git_token:
         required: true

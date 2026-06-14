@@ -9,6 +9,7 @@ on:
       runner:
         type: string
         default: ubuntu-latest
+        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
       image:
         type: string
         required: true
@@ -20,21 +21,28 @@ on:
       keyless:
         type: boolean
         default: true
+        description: Sign keylessly via GitHub OIDC (Fulcio/Rekor); set false to sign with cosign_key.
       cosign_version:
         type: string
         default: v2.4.1
+        description: cosign release version to install for signing.
       registry_insecure:
         type: boolean
         default: false
+        description: Allow HTTP / skip registry TLS verify (adds cosign --allow-insecure-registry --allow-http-registry).
     secrets:
       cosign_key:
         required: false
+        description: Cosign private key (PEM) for key-based signing; required when keyless is false.
       cosign_password:
         required: false
+        description: Passphrase for cosign_key (exported as COSIGN_PASSWORD).
       registry_username:
         required: false
+        description: Registry username for cosign login (when the registry requires auth).
       registry_password:
         required: false
+        description: Registry password/token for cosign login; presence triggers a login before signing.
 
 jobs:
   sign:

@@ -22,6 +22,7 @@ on:
       severity:
         type: string
         default: "CRITICAL,HIGH"
+        description: Comma-separated severities to include in the report (e.g. CRITICAL,HIGH).
       fail_on_severity:
         type: string
         default: ""
@@ -29,15 +30,19 @@ on:
       report_name:
         type: string
         default: ""
+        description: Base name for the report files/artifact; defaults to trivy-<scan_type> when empty.
       trivy_version:
         type: string
         default: v0.70.0
+        description: Trivy release version to install on the runner.
       registry_insecure:
         type: boolean
         default: false
+        description: Pull images over HTTP / skip registry TLS verify (sets TRIVY_INSECURE and TRIVY_NON_SSL).
       report_retention_days:
         type: number
         default: 7
+        description: Days to retain the uploaded Trivy report artifact.
 
 jobs:
   trivy:

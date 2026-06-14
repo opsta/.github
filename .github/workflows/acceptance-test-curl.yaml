@@ -10,21 +10,27 @@ on:
       runner:
         type: string
         default: ubuntu-latest
+        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
       test_url:
         type: string
         required: true
+        description: URL to curl for the acceptance check.
       acceptance_text:
         type: string
         required: true
+        description: Case-insensitive substring the response body must contain to pass.
       retries:
         type: number
         default: 30
+        description: Number of curl attempts before failing the check.
       retry_interval:
         type: number
         default: 10
+        description: Seconds to wait between retry attempts.
       curl_insecure:
         type: boolean
         default: false
+        description: Pass curl -k to skip TLS verification (for self-signed endpoints).
 
 jobs:
   acceptance:

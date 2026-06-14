@@ -10,6 +10,7 @@ on:
       runner:
         type: string
         default: ubuntu-latest
+        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
       image:
         type: string
         required: true
@@ -17,20 +18,26 @@ on:
       tag_from:
         type: string
         required: true
+        description: Source image tag to copy from.
       tag_to:
         type: string
         required: true
+        description: New image tag to copy to.
       registry_insecure:
         type: boolean
         default: false
+        description: Pull/push over HTTP / skip registry TLS verify (adds crane --insecure).
       crane_version:
         type: string
         default: v0.20.2
+        description: go-containerregistry (crane) release version to install on the runner.
     secrets:
       registry_username:
         required: false
+        description: Registry username for crane auth login (when the registry requires auth).
       registry_password:
         required: false
+        description: Registry password/token for crane auth login; presence triggers a login before copy.
 
 jobs:
   retag:

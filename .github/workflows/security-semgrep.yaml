@@ -10,6 +10,7 @@ on:
       runner:
         type: string
         default: ubuntu-latest
+        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
       config:
         type: string
         default: "p/default"
@@ -17,18 +18,23 @@ on:
       scan_path:
         type: string
         default: "."
+        description: Path within the checked-out repo for Semgrep to scan.
       severity:
         type: string
         default: "ERROR"
+        description: Minimum severity to report/gate on (ERROR, WARNING, or INFO).
       fail_on_findings:
         type: boolean
         default: false
+        description: Fail the job when findings at the chosen severity exist; default is report-only.
       semgrep_image:
         type: string
         default: semgrep/semgrep:1.163.0
+        description: Semgrep container image the job runs in.
       report_retention_days:
         type: number
         default: 7
+        description: Days to retain the uploaded Semgrep report artifact.
 
 jobs:
   semgrep:
