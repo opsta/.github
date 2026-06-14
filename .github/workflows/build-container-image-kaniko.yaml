@@ -1,0 +1,164 @@
+name: Reusable - Build container image (kaniko, in-cluster)
+
+# Builds ONE service image with kaniko as an in-cluster Kubernetes Job, pushing
+# to a registry reachable from the cluster (e.g. a private in-cluster registry).
+# Mirrors versa-gitlab-cicd hidden-jobs/build-container-image-kaniko.yaml, adapted
+# to GitHub Actions + self-hosted (ARC) runners that submit a kaniko Job.
+#
+# Loop over services with a matrix in the calling workflow (one call per service).
+# The runner's ServiceAccount must have RBAC to manage Jobs/secrets in build_namespace.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        required: true
+        description: Runner label with in-cluster kubectl access (e.g. an ARC scale set).
+      service:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+        description: Full image ref WITHOUT tag, e.g. registry:5000/app/svc.
+      image_tag:
+        type: string
+        required: true
+      git_repo:
+        type: string
+        required: true
+        description: owner/repo for the kaniko git build context.
+      git_ref:
+        type: string
+        required: true
+        description: Commit SHA (or ref) kaniko checks out for the build context.
+      context_sub_path:
+        type: string
+        required: true
+        description: Path within the repo to build, e.g. src/productpage.
+      dockerfile:
+        type: string
+        default: Dockerfile
+      build_args:
+        type: string
+        default: ""
+        description: Space-separated key=value pairs passed as --build-arg.
+      build_namespace:
+        type: string
+        default: ci
+      kaniko_image:
+        type: string
+        default: gcr.io/kaniko-project/executor:v1.23.2
+      kubectl_version:
+        type: string
+        default: v1.31.4
+      registry_insecure:
+        type: boolean
+        default: true
+      build_timeout:
+        type: string
+        default: "600s"
+    secrets:
+      git_token:
+        required: true
+        description: Token kaniko uses to clone the (private) git build context.
+    outputs:
+      image_digest:
+        description: sha256 manifest digest of the pushed image (for immutable/digest pinning).
+        value: ${{ jobs.build.outputs.image_digest }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      image_digest: ${{ steps.digest.outputs.image_digest }}
+    env:
+      JOB_NAME: build-${{ inputs.service }}-${{ github.run_id }}
+      SECRET_NAME: kaniko-git-${{ inputs.service }}-${{ github.run_id }}
+      NS: ${{ inputs.build_namespace }}
+    steps:
+      - name: Install kubectl (writable PATH; ARC runner is non-root)
+        run: |
+          set -eu
+          BIN="$RUNNER_TEMP/bin"; mkdir -p "$BIN"
+          curl -sSLo "$BIN/kubectl" "https://dl.k8s.io/release/${{ inputs.kubectl_version }}/bin/linux/amd64/kubectl"
+          chmod +x "$BIN/kubectl"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: Create kaniko git-credential secret
+        run: |
+          kubectl -n "$NS" create secret generic "$SECRET_NAME" \
+            --from-literal=token="${{ secrets.git_token }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Submit kaniko build Job and wait
+        run: |
+          set -eu
+          EXTRA=""
+          for ba in ${{ inputs.build_args }}; do EXTRA="${EXTRA}
+            - --build-arg=${ba}"; done
+          if [ "${{ inputs.registry_insecure }}" = "true" ]; then EXTRA="${EXTRA}
+            - --insecure
+            - --skip-tls-verify"; fi
+          cat <<YAML | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${JOB_NAME}
+            namespace: ${NS}
+            labels:
+              app.kubernetes.io/managed-by: opsta-ci
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 1800
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: kaniko
+                    image: ${{ inputs.kaniko_image }}
+                    args:
+                      - --context=git://github.com/${{ inputs.git_repo }}.git#${{ inputs.git_ref }}
+                      - --context-sub-path=${{ inputs.context_sub_path }}
+                      - --dockerfile=${{ inputs.dockerfile }}
+                      - --destination=${{ inputs.image }}:${{ inputs.image_tag }}${EXTRA}
+                    env:
+                      - name: GIT_USERNAME
+                        value: x-access-token
+                      - name: GIT_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${SECRET_NAME}
+                            key: token
+          YAML
+          if ! kubectl -n "$NS" wait --for=condition=complete "job/${JOB_NAME}" --timeout=${{ inputs.build_timeout }}; then
+            echo "::error title=kaniko build failed::${{ inputs.service }}"
+            kubectl -n "$NS" logs "job/${JOB_NAME}" --tail=60 || true
+            exit 1
+          fi
+          kubectl -n "$NS" logs "job/${JOB_NAME}" --tail=8 || true
+
+      - name: Resolve pushed image digest
+        id: digest
+        run: |
+          set -eu
+          IMAGE="${{ inputs.image }}"
+          REGISTRY="${IMAGE%%/*}"          # host[:port]
+          REPO="${IMAGE#*/}"               # path after host
+          SCHEME=http
+          [ "${{ inputs.registry_insecure }}" = "true" ] || SCHEME=https
+          DIGEST=$(curl -sSI -k \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+            "${SCHEME}://${REGISTRY}/v2/${REPO}/manifests/${{ inputs.image_tag }}" \
+            | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "digest: ${DIGEST:-<none>}"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kubectl -n "$NS" delete secret "$SECRET_NAME" --ignore-not-found
+          kubectl -n "$NS" delete job "$JOB_NAME" --ignore-not-found

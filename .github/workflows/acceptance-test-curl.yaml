@@ -1,0 +1,45 @@
+name: Reusable - Acceptance test (curl)
+
+# Polls a URL until the response body contains an expected string.
+# Mirrors versa-gitlab-cicd hidden-jobs/acceptance-test-curl.yaml (.acceptance-test-curl),
+# with a retry loop so it tolerates the post-sync rollout window.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      test_url:
+        type: string
+        required: true
+      acceptance_text:
+        type: string
+        required: true
+      retries:
+        type: number
+        default: 30
+      retry_interval:
+        type: number
+        default: 10
+      curl_insecure:
+        type: boolean
+        default: false
+
+jobs:
+  acceptance:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Curl & assert
+        run: |
+          set -eu
+          K=""; [ "${{ inputs.curl_insecure }}" = "true" ] && K="-k"
+          for i in $(seq 1 ${{ inputs.retries }}); do
+            if curl -fsS $K "${{ inputs.test_url }}" | grep -qi "${{ inputs.acceptance_text }}"; then
+              echo "✓ acceptance OK: ${{ inputs.test_url }}"; exit 0
+            fi
+            echo "waiting ($i/${{ inputs.retries }}) for ${{ inputs.test_url }}"
+            sleep ${{ inputs.retry_interval }}
+          done
+          echo "::error title=acceptance failed::${{ inputs.test_url }} did not contain '${{ inputs.acceptance_text }}'"
+          exit 1

@@ -1,0 +1,63 @@
+name: Reusable - ArgoCD sync & wait
+
+# Refreshes one or more ArgoCD applications and polls until Synced + Healthy via
+# the ArgoCD REST API. Mirrors versa-gitlab-cicd hidden-jobs/argocd-sync.yaml
+# (.argocd-sync-wait) — no argocd CLI needed, just curl + jq.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      argocd_server:
+        type: string
+        required: true
+        description: ArgoCD host, e.g. argocd.example.com (no scheme).
+      app_names:
+        type: string
+        required: true
+        description: Space-separated ArgoCD application names to sync & wait for.
+      wait_timeout:
+        type: string
+        default: "300"
+      poll_interval:
+        type: string
+        default: "10"
+      tls_insecure:
+        type: boolean
+        default: false
+        description: curl -k (skip TLS verify) for self-signed ArgoCD endpoints.
+    secrets:
+      argocd_token:
+        required: true
+
+jobs:
+  sync:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Refresh & wait for apps
+        env:
+          ARGOCD_TOKEN: ${{ secrets.argocd_token }}
+        run: |
+          set -eu
+          K=""; [ "${{ inputs.tls_insecure }}" = "true" ] && K="-k"
+          API="https://${{ inputs.argocd_server }}/api/v1/applications"
+          AUTH="Authorization: Bearer ${ARGOCD_TOKEN}"
+          for APP in ${{ inputs.app_names }}; do
+            echo "Refreshing ${APP}..."
+            curl -sf $K -H "${AUTH}" "${API}/${APP}?refresh=normal" >/dev/null
+            ELAPSED=0
+            while [ "${ELAPSED}" -lt "${{ inputs.wait_timeout }}" ]; do
+              JSON=$(curl -sf $K -H "${AUTH}" "${API}/${APP}")
+              SYNC=$(echo "${JSON}" | jq -r '.status.sync.status // "Unknown"')
+              HEALTH=$(echo "${JSON}" | jq -r '.status.health.status // "Unknown"')
+              echo "[${ELAPSED}s] ${APP}: Sync=${SYNC} Health=${HEALTH}"
+              case "${HEALTH}" in Degraded|Missing) echo "::error::${APP} health=${HEALTH}"; exit 1;; esac
+              [ "${SYNC}" = "Synced" ] && [ "${HEALTH}" = "Healthy" ] && { echo "OK: ${APP}"; break; }
+              sleep "${{ inputs.poll_interval }}"; ELAPSED=$((ELAPSED + ${{ inputs.poll_interval }}))
+            done
+            if [ "${ELAPSED}" -ge "${{ inputs.wait_timeout }}" ]; then
+              echo "::error::timed out waiting for ${APP}"; exit 1
+            fi
+          done

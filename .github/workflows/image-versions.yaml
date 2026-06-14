@@ -1,0 +1,47 @@
+name: Reusable - Central image versions
+
+# Single source of truth for the container images used by the reusable CI/CD
+# workflows (mirrors versa-gitlab-cicd/image-versions.yaml). Composed pipelines
+# call this first and pass the outputs down to the other reusables.
+#
+# Bump a version here to update every pipeline that consumes it.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+        description: Runner label for this (lightweight) job.
+    outputs:
+      kaniko_image:
+        value: ${{ jobs.versions.outputs.kaniko_image }}
+      crane_image:
+        value: ${{ jobs.versions.outputs.crane_image }}
+      curl_image:
+        value: ${{ jobs.versions.outputs.curl_image }}
+      alpine_git_image:
+        value: ${{ jobs.versions.outputs.alpine_git_image }}
+      kubectl_version:
+        value: ${{ jobs.versions.outputs.kubectl_version }}
+
+jobs:
+  versions:
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      kaniko_image: ${{ steps.v.outputs.kaniko_image }}
+      crane_image: ${{ steps.v.outputs.crane_image }}
+      curl_image: ${{ steps.v.outputs.curl_image }}
+      alpine_git_image: ${{ steps.v.outputs.alpine_git_image }}
+      kubectl_version: ${{ steps.v.outputs.kubectl_version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          {
+            echo "kaniko_image=gcr.io/kaniko-project/executor:v1.23.2"
+            echo "crane_image=gcr.io/go-containerregistry/crane:debug"
+            echo "curl_image=curlimages/curl:8.20.0"
+            echo "alpine_git_image=alpine/git:v2.52.0"
+            echo "kubectl_version=v1.31.4"
+          } >> "$GITHUB_OUTPUT"

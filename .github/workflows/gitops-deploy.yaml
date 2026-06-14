@@ -1,0 +1,94 @@
+name: Reusable - GitOps deploy (bump image tag)
+
+# Updates the deployed image tag for one or more services in a GitOps repo and
+# commits. Mirrors versa-gitlab-cicd hidden-jobs/deploy.yaml (.deploy-gitops).
+#
+# Floating-tag refresh bug: if the deployed tag is a reused label (dev/uat/prd),
+# rebuilding does not change the GitOps values, so ArgoCD never rolls out the new
+# image. Pass a UNIQUE image_tag_value (e.g. <env>-<sha>) — or a digest-pinned
+# value like <env>@<sha256:...> using the build's image_digest output — so the
+# value changes every build. A unique tag is both the diff trigger AND immutable.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      services:
+        type: string
+        required: true
+        description: Space-separated service names.
+      image_tag_value:
+        type: string
+        required: true
+        description: New (unique) image tag to write for every service.
+      values_file_template:
+        type: string
+        default: ""
+        description: helm-values file path with __SERVICE__ placeholder (yq updates image_tag_path).
+      image_tag_path:
+        type: string
+        default: .image.tag
+        description: yq path of the tag field inside values_file_template.
+      manifest_file_template:
+        type: string
+        default: ""
+        description: Optional pre-rendered manifest path with __SERVICE__ (image tag updated via sed).
+      image_name_template:
+        type: string
+        default: ""
+        description: Image name (with __SERVICE__) used to anchor the sed in manifest_file_template.
+      gitops_branch:
+        type: string
+        default: main
+      commit_message:
+        type: string
+        default: ""
+
+jobs:
+  deploy:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.gitops_branch }}
+      - name: Install yq
+        run: |
+          set -eu
+          BIN="$RUNNER_TEMP/bin"; mkdir -p "$BIN"
+          curl -sSLo "$BIN/yq" https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x "$BIN/yq"; echo "$BIN" >> "$GITHUB_PATH"
+      - name: Bump image tags
+        env:
+          TAG: ${{ inputs.image_tag_value }}
+        run: |
+          set -eu
+          for SVC in ${{ inputs.services }}; do
+            if [ -n "${{ inputs.values_file_template }}" ]; then
+              VF="${{ inputs.values_file_template }}"; VF="${VF//__SERVICE__/$SVC}"
+              yq -i "${{ inputs.image_tag_path }} = \"${TAG}\"" "$VF"
+              echo "values: $VF -> ${TAG}"
+            fi
+            if [ -n "${{ inputs.manifest_file_template }}" ] && [ -n "${{ inputs.image_name_template }}" ]; then
+              MF="${{ inputs.manifest_file_template }}"; MF="${MF//__SERVICE__/$SVC}"
+              IN="${{ inputs.image_name_template }}"; IN="${IN//__SERVICE__/$SVC}"
+              sed -i -E "s#(${IN}):[^\"[:space:]]+#\1:${TAG}#g" "$MF"
+              echo "manifest: $MF -> ${TAG}"
+            fi
+          done
+      - name: Commit & push
+        run: |
+          set -eu
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          MSG="${{ inputs.commit_message }}"
+          [ -n "$MSG" ] || MSG="ci: deploy ${{ inputs.image_tag_value }} [skip ci]"
+          git commit -m "$MSG" || { echo "no changes to commit"; exit 0; }
+          for i in 1 2 3 4 5; do
+            git push origin "HEAD:${{ inputs.gitops_branch }}" && break
+            echo "push attempt $i failed; rebasing..."; git pull --rebase origin "${{ inputs.gitops_branch }}"
+          done

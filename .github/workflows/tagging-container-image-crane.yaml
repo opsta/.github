@@ -1,0 +1,55 @@
+name: Reusable - Tag container image (crane)
+
+# Promote-by-retag: copy an existing image to a new tag without rebuilding.
+# Mirrors versa-gitlab-cicd hidden-jobs/tagging-container-image-crane.yaml.
+# Runs on a runner with network reach to the registry (ARC for in-cluster registries).
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      image:
+        type: string
+        required: true
+        description: Image ref WITHOUT tag.
+      tag_from:
+        type: string
+        required: true
+      tag_to:
+        type: string
+        required: true
+      registry_insecure:
+        type: boolean
+        default: false
+      crane_version:
+        type: string
+        default: v0.20.2
+    secrets:
+      registry_username:
+        required: false
+      registry_password:
+        required: false
+
+jobs:
+  retag:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Install crane
+        run: |
+          set -eu
+          BIN="$RUNNER_TEMP/bin"; mkdir -p "$BIN"
+          curl -sSL "https://github.com/google/go-containerregistry/releases/download/${{ inputs.crane_version }}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xz -C "$BIN" crane
+          chmod +x "$BIN/crane"; echo "$BIN" >> "$GITHUB_PATH"
+      - name: Retag
+        run: |
+          set -eu
+          FLAGS=""; [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS="--insecure"
+          if [ -n "${{ secrets.registry_password }}" ]; then
+            REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
+            crane auth login $FLAGS -u "${{ secrets.registry_username }}" -p "${{ secrets.registry_password }}" "$REGISTRY"
+          fi
+          crane copy $FLAGS "${{ inputs.image }}:${{ inputs.tag_from }}" "${{ inputs.image }}:${{ inputs.tag_to }}"
+          echo "✓ ${{ inputs.image }}:${{ inputs.tag_from }} -> :${{ inputs.tag_to }}"
