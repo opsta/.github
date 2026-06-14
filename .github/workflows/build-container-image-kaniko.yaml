@@ -95,12 +95,15 @@ jobs:
       - name: Submit kaniko build Job and wait
         run: |
           set -eu
-          EXTRA=""
-          for ba in ${{ inputs.build_args }}; do EXTRA="${EXTRA}
-            - --build-arg=${ba}"; done
-          if [ "${{ inputs.registry_insecure }}" = "true" ]; then EXTRA="${EXTRA}
-            - --insecure
-            - --skip-tls-verify"; fi
+          # Build the kaniko args as a single-line JSON array (YAML flow sequence)
+          # so injected build-args/flags can't break block indentation.
+          ARGS="[\"--context=git://github.com/${{ inputs.git_repo }}.git#${{ inputs.git_ref }}\""
+          ARGS="${ARGS},\"--context-sub-path=${{ inputs.context_sub_path }}\""
+          ARGS="${ARGS},\"--dockerfile=${{ inputs.dockerfile }}\""
+          ARGS="${ARGS},\"--destination=${{ inputs.image }}:${{ inputs.image_tag }}\""
+          for ba in ${{ inputs.build_args }}; do ARGS="${ARGS},\"--build-arg=${ba}\""; done
+          if [ "${{ inputs.registry_insecure }}" = "true" ]; then ARGS="${ARGS},\"--insecure\",\"--skip-tls-verify\""; fi
+          ARGS="${ARGS}]"
           cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
           kind: Job
@@ -118,11 +121,7 @@ jobs:
                 containers:
                   - name: kaniko
                     image: ${{ inputs.kaniko_image }}
-                    args:
-                      - --context=git://github.com/${{ inputs.git_repo }}.git#${{ inputs.git_ref }}
-                      - --context-sub-path=${{ inputs.context_sub_path }}
-                      - --dockerfile=${{ inputs.dockerfile }}
-                      - --destination=${{ inputs.image }}:${{ inputs.image_tag }}${EXTRA}
+                    args: ${ARGS}
                     env:
                       - name: GIT_USERNAME
                         value: x-access-token
