@@ -1,0 +1,60 @@
+name: Reusable - Security scan (Semgrep SAST)
+
+# SAST with Semgrep (mirrors versa-gitlab-cicd hidden-jobs/semgrep.yaml).
+# Auto-detects languages by default; uploads a JSON report. Report-only unless
+# fail_on_findings is true.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      config:
+        type: string
+        default: "p/default"
+        description: Semgrep rule config (e.g. "p/default", "p/owasp-top-ten", "auto").
+      scan_path:
+        type: string
+        default: "."
+      severity:
+        type: string
+        default: "ERROR"
+      fail_on_findings:
+        type: boolean
+        default: false
+      semgrep_image:
+        type: string
+        default: semgrep/semgrep:1.163.0
+      report_retention_days:
+        type: number
+        default: 7
+
+jobs:
+  semgrep:
+    runs-on: ${{ inputs.runner }}
+    container:
+      image: ${{ inputs.semgrep_image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan (report)
+        run: |
+          set -eu
+          mkdir -p reports
+          semgrep scan --config ${{ inputs.config }} --severity ${{ inputs.severity }} \
+            --json -o reports/semgrep-report.json "${{ inputs.scan_path }}" || true
+          semgrep scan --config ${{ inputs.config }} --severity ${{ inputs.severity }} \
+            "${{ inputs.scan_path }}" || true
+      - name: Gate
+        if: ${{ inputs.fail_on_findings }}
+        run: |
+          set -eu
+          COUNT=$(python3 -c "import json;print(len(json.load(open('reports/semgrep-report.json')).get('results',[])))")
+          echo "semgrep findings: ${COUNT}"
+          [ "${COUNT}" -eq 0 ] || { echo "::error title=SAST findings::${COUNT} ${{ inputs.severity }} finding(s)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-report
+          path: reports/
+          retention-days: ${{ inputs.report_retention_days }}

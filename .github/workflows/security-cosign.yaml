@@ -1,0 +1,66 @@
+name: Reusable - Sign image (Cosign)
+
+# Signs a pushed image by digest (mirrors versa-gitlab-cicd hidden-jobs/cosign.yaml).
+# Keyless (GitHub OIDC -> Fulcio/Rekor) by default, or key-based via cosign_key secret.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-latest
+      image:
+        type: string
+        required: true
+        description: Image ref WITHOUT tag.
+      digest:
+        type: string
+        required: true
+        description: sha256:... digest to sign (use build-container-image-kaniko's image_digest).
+      keyless:
+        type: boolean
+        default: true
+      cosign_version:
+        type: string
+        default: v2.4.1
+      registry_insecure:
+        type: boolean
+        default: false
+    secrets:
+      cosign_key:
+        required: false
+      cosign_password:
+        required: false
+      registry_username:
+        required: false
+      registry_password:
+        required: false
+
+jobs:
+  sign:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      id-token: write   # keyless OIDC
+      contents: read
+    steps:
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: ${{ inputs.cosign_version }}
+      - name: Sign
+        env:
+          COSIGN_PASSWORD: ${{ secrets.cosign_password }}
+        run: |
+          set -eu
+          FLAGS=""; [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS="--allow-insecure-registry --allow-http-registry"
+          if [ -n "${{ secrets.registry_password }}" ]; then
+            REG="${{ inputs.image }}"; REG="${REG%%/*}"
+            cosign login $FLAGS -u "${{ secrets.registry_username }}" -p "${{ secrets.registry_password }}" "$REG"
+          fi
+          REF="${{ inputs.image }}@${{ inputs.digest }}"
+          if [ "${{ inputs.keyless }}" = "true" ]; then
+            COSIGN_EXPERIMENTAL=1 cosign sign --yes $FLAGS "$REF"
+          else
+            echo "${{ secrets.cosign_key }}" > /tmp/cosign.key
+            cosign sign --yes --key /tmp/cosign.key $FLAGS "$REF"
+          fi
+          echo "✓ signed $REF"
