@@ -45,6 +45,46 @@ jobs:
             --json -o reports/semgrep-report.json "${{ inputs.scan_path }}" || true
           semgrep scan --config ${{ inputs.config }} --severity ${{ inputs.severity }} \
             "${{ inputs.scan_path }}" || true
+      - name: Job summary (summary + detail)
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, html
+          try:
+              data = json.load(open("reports/semgrep-report.json"))
+          except Exception as e:
+              print(f"No Semgrep report ({e})"); raise SystemExit(0)
+          res = data.get("results", [])
+          sev = {}
+          for r in res:
+              s = r.get("extra", {}).get("severity", "INFO")
+              sev[s] = sev.get(s, 0) + 1
+          print("## 🔬 Semgrep SAST")
+          print()
+          print(f"**Total: {len(res)}**  ·  gate: _{'fail on findings' if os.environ.get('FAIL')=='true' else 'report-only'}_")
+          print()
+          print("| Severity | Count |"); print("|---|---|")
+          for s in ("ERROR", "WARNING", "INFO"):
+              print(f"| {s} | {sev.get(s,0)} |")
+          print()
+          if res:
+              print(f"<details><summary>Detail report ({len(res)} findings, top 200)</summary>")
+              print()
+              print("| Severity | Rule | Location | Message |"); print("|---|---|---|---|")
+              for r in res[:200]:
+                  rule = r.get("check_id", "")
+                  path = r.get("path", "")
+                  line = r.get("start", {}).get("line", 0)
+                  s = r.get("extra", {}).get("severity", "")
+                  msg = (r.get("extra", {}).get("message", "") or "").replace("|", " ").replace("\n", " ")[:200]
+                  print(f"| {s} | {rule} | {path}:{line} | {msg} |")
+              print(); print("</details>")
+          else:
+              print("✅ No findings.")
+          print()
+          PY
+        env:
+          FAIL: ${{ inputs.fail_on_findings }}
       - name: Gate
         if: ${{ inputs.fail_on_findings }}
         run: |

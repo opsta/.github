@@ -49,11 +49,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         if: ${{ inputs.scan_type != 'image' }}
-      - name: Install Trivy
+      - name: Install Trivy + jq
         run: |
           set -eu
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b "$RUNNER_TEMP/bin" "${{ inputs.trivy_version }}"
+          command -v jq >/dev/null 2>&1 || {
+            curl -sSLo "$RUNNER_TEMP/bin/jq" https://github.com/jqlang/jq/releases/latest/download/jq-linux-amd64
+            chmod +x "$RUNNER_TEMP/bin/jq"; }
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Scan (report)
         run: |
@@ -76,6 +79,47 @@ jobs:
             *) echo "::error::unknown scan_type ${{ inputs.scan_type }}"; exit 1 ;;
           esac
           echo "----- ${REPORT} -----"; cat "reports/${REPORT}.txt" || true
+      - name: Job summary (summary + detail)
+        if: always()
+        run: |
+          set -eu
+          J="reports/${REPORT}.json"
+          [ -f "$J" ] || { echo "No report for ${REPORT}" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          # Flatten all finding types to {Severity, Id, Target, Title}
+          ALL=$(jq -c '[ .Results[]? as $r
+            | ( ($r.Vulnerabilities[]?  | {Severity, Id:.VulnerabilityID, Target:$r.Target, Title:(.Title // .PkgName // "")}),
+                ($r.Misconfigurations[]?| {Severity, Id:.ID,              Target:$r.Target, Title:(.Title // "")}),
+                ($r.Secrets[]?          | {Severity, Id:.RuleID,          Target:$r.Target, Title:(.Title // "")}) ) ]' "$J")
+          c() { echo "$ALL" | jq -r --arg s "$1" '[.[]|select(.Severity==$s)]|length'; }
+          CR=$(c CRITICAL); HI=$(c HIGH); ME=$(c MEDIUM); LO=$(c LOW); UN=$(c UNKNOWN)
+          TOTAL=$(echo "$ALL" | jq -r 'length')
+          GATE="report-only"; [ -n "${{ inputs.fail_on_severity }}" ] && GATE="fail ≥ ${{ inputs.fail_on_severity }}"
+          {
+            echo "## 🛡️ Trivy ${{ inputs.scan_type }} — \`${{ inputs.scan_ref }}\`"
+            echo ""
+            echo "**Total: ${TOTAL}**  ·  gate: _${GATE}_"
+            echo ""
+            echo "| Severity | Count |"
+            echo "|---|---|"
+            echo "| 🔴 CRITICAL | ${CR} |"
+            echo "| 🟠 HIGH | ${HI} |"
+            echo "| 🟡 MEDIUM | ${ME} |"
+            echo "| 🔵 LOW | ${LO} |"
+            echo "| ⚪ UNKNOWN | ${UN} |"
+            echo ""
+            if [ "${TOTAL}" -gt 0 ]; then
+              echo "<details><summary>Detail report (${TOTAL} findings, top 200)</summary>"
+              echo ""
+              echo "| Severity | ID | Target | Title |"
+              echo "|---|---|---|---|"
+              echo "$ALL" | jq -r '.[] | "| \(.Severity) | \(.Id) | \(.Target) | \(.Title|gsub("[|\n]";" ")) |"' | head -200
+              echo ""
+              echo "</details>"
+            else
+              echo "✅ No findings."
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Gate
         if: ${{ inputs.fail_on_severity != '' }}
         run: |
