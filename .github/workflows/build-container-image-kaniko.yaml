@@ -67,6 +67,15 @@ on:
         type: string
         default: "600s"
         description: kubectl wait timeout for the kaniko Job to complete (e.g. 600s).
+      kaniko_service_account:
+        type: string
+        default: ""
+        description: >-
+          Optional ServiceAccount name for the kaniko Job pod. Set this to a
+          Workload-Identity-bound KSA (annotated iam.gke.io/gcp-service-account)
+          so kaniko pushes to a cloud registry (e.g. Artifact Registry) via the
+          GKE metadata token — no docker config/key file needed. Empty = use the
+          namespace default ServiceAccount (in-cluster registry case).
     secrets:
       git_token:
         required: true
@@ -112,6 +121,12 @@ jobs:
           for ba in ${{ inputs.build_args }}; do ARGS="${ARGS},\"--build-arg=${ba}\""; done
           if [ "${{ inputs.registry_insecure }}" = "true" ]; then ARGS="${ARGS},\"--insecure\",\"--skip-tls-verify\""; fi
           ARGS="${ARGS}]"
+          # Optionally run the kaniko pod under a Workload-Identity-bound KSA so it
+          # can push to a cloud registry (Artifact Registry) via the metadata token.
+          SA_LINE=""
+          if [ -n "${{ inputs.kaniko_service_account }}" ]; then
+            SA_LINE="serviceAccountName: ${{ inputs.kaniko_service_account }}"
+          fi
           cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
           kind: Job
@@ -126,6 +141,7 @@ jobs:
             template:
               spec:
                 restartPolicy: Never
+                ${SA_LINE}
                 containers:
                   - name: kaniko
                     image: ${{ inputs.kaniko_image }}
@@ -155,7 +171,19 @@ jobs:
           REPO="${IMAGE#*/}"               # path after host
           SCHEME=http
           [ "${{ inputs.registry_insecure }}" = "true" ] || SCHEME=https
-          DIGEST=$(curl -sSI -k \
+          # Cloud registries (Artifact Registry *.pkg.dev) reject anonymous manifest
+          # GETs — add a bearer token from the GKE metadata server. Requires the
+          # runner pod's KSA to be Workload-Identity-bound with AR read access.
+          AUTH_HEADER=()
+          case "$REGISTRY" in
+            *.pkg.dev)
+              TOKEN=$(curl -s -H 'Metadata-Flavor: Google' \
+                "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
+                | tr -d '\r' | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+              [ -n "$TOKEN" ] && AUTH_HEADER=(-H "Authorization: Bearer ${TOKEN}")
+              ;;
+          esac
+          DIGEST=$(curl -sSI -k "${AUTH_HEADER[@]}" \
             -H 'Accept: application/vnd.oci.image.index.v1+json' \
             -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
             -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
