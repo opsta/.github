@@ -68,10 +68,13 @@ jobs:
           set -eu
           mkdir -p reports
           case "${{ inputs.scan_type }}" in
-            image)  trivy image --scanners vuln,misconfig,secret --exit-code 0 --severity "${{ inputs.severity }}" \
-                      --format table -o "reports/${REPORT}.txt" "${{ inputs.scan_ref }}"
-                    trivy image --scanners vuln,misconfig,secret --exit-code 0 --format json \
-                      -o "reports/${REPORT}.json" "${{ inputs.scan_ref }}" ;;
+            image)  # Report-only: a registry pull/auth failure (e.g. the runner lacks
+                    # read creds for a cloud registry) must not fail the pipeline.
+                    { trivy image --scanners vuln,misconfig,secret --exit-code 0 --severity "${{ inputs.severity }}" \
+                        --format table -o "reports/${REPORT}.txt" "${{ inputs.scan_ref }}" \
+                      && trivy image --scanners vuln,misconfig,secret --exit-code 0 --format json \
+                        -o "reports/${REPORT}.json" "${{ inputs.scan_ref }}" ; } \
+                    || echo "::warning::trivy image scan could not complete (registry pull/auth?) — report-only, not failing the pipeline" ;;
             config) trivy config --exit-code 0 --severity "${{ inputs.severity }}" \
                       --format table -o "reports/${REPORT}.txt" "${{ inputs.scan_ref }}"
                     trivy config --exit-code 0 --format json -o "reports/${REPORT}.json" "${{ inputs.scan_ref }}" ;;
