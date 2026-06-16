@@ -23,6 +23,12 @@ on:
         type: string
         required: true
         description: New image tag to copy to.
+      moving_tag:
+        type: string
+        default: ""
+        description: >-
+          Optional moving alias (e.g. "uat") updated to point at the promoted image too, so the
+          next stage can crane-copy from the alias. Empty = copy to tag_to only.
       registry_insecure:
         type: boolean
         default: false
@@ -60,3 +66,8 @@ jobs:
           fi
           crane copy $FLAGS "${{ inputs.image }}:${{ inputs.tag_from }}" "${{ inputs.image }}:${{ inputs.tag_to }}"
           echo "✓ ${{ inputs.image }}:${{ inputs.tag_from }} -> :${{ inputs.tag_to }}"
+          # Optional moving alias (e.g. uat) updated to the promoted image for the next stage's tag_from.
+          if [ -n "${{ inputs.moving_tag }}" ]; then
+            crane copy $FLAGS "${{ inputs.image }}:${{ inputs.tag_to }}" "${{ inputs.image }}:${{ inputs.moving_tag }}"
+            echo "✓ ${{ inputs.image }}:${{ inputs.tag_to }} -> :${{ inputs.moving_tag }} (moving alias)"
+          fi

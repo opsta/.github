@@ -27,6 +27,13 @@ on:
         type: string
         required: true
         description: Tag to push the built image as (kaniko --destination tag).
+      moving_tag:
+        type: string
+        default: ""
+        description: >-
+          Optional moving alias tag (e.g. "dev"/"uat") pushed alongside image_tag in the SAME
+          kaniko build (a second --destination). Enables build-once / promote-by-copy where a
+          later stage crane-copies from the moving alias. Empty = push image_tag only.
       git_repo:
         type: string
         required: true
@@ -118,6 +125,9 @@ jobs:
           ARGS="${ARGS},\"--context-sub-path=${{ inputs.context_sub_path }}\""
           ARGS="${ARGS},\"--dockerfile=${{ inputs.dockerfile }}\""
           ARGS="${ARGS},\"--destination=${{ inputs.image }}:${{ inputs.image_tag }}\""
+          # Optional moving alias (e.g. dev/uat) pushed in the same build — kaniko supports
+          # multiple --destination flags, so the alias and the immutable tag share one build.
+          if [ -n "${{ inputs.moving_tag }}" ]; then ARGS="${ARGS},\"--destination=${{ inputs.image }}:${{ inputs.moving_tag }}\""; fi
           for ba in ${{ inputs.build_args }}; do ARGS="${ARGS},\"--build-arg=${ba}\""; done
           if [ "${{ inputs.registry_insecure }}" = "true" ]; then ARGS="${ARGS},\"--insecure\",\"--skip-tls-verify\""; fi
           ARGS="${ARGS}]"
