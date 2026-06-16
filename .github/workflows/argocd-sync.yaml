@@ -31,6 +31,13 @@ on:
         type: boolean
         default: false
         description: curl -k (skip TLS verify) for self-signed ArgoCD endpoints.
+      argocd_insecure:
+        type: boolean
+        default: false
+        description: >-
+          Use http:// instead of https:// for the ArgoCD API — for clusters where argocd-server
+          runs with server.insecure=true (plain HTTP, e.g. behind a TLS-terminating gateway),
+          common for in-cluster (.svc) endpoints. Default false = https://.
     secrets:
       argocd_token:
         required: true
@@ -46,7 +53,8 @@ jobs:
         run: |
           set -eu
           K=""; [ "${{ inputs.tls_insecure }}" = "true" ] && K="-k"
-          API="https://${{ inputs.argocd_server }}/api/v1/applications"
+          SCHEME=https; [ "${{ inputs.argocd_insecure }}" = "true" ] && SCHEME=http
+          API="${SCHEME}://${{ inputs.argocd_server }}/api/v1/applications"
           AUTH="Authorization: Bearer ${ARGOCD_TOKEN}"
           for APP in ${{ inputs.app_names }}; do
             echo "Refreshing ${APP}..."
