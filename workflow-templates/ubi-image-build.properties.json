@@ -1,0 +1,7 @@
+{
+  "name": "UBI hardened base image build",
+  "description": "Build, scan (Trivy), CIS Docker Benchmark v1.8 §4 validate, and publish hardened Red Hat UBI base images (SDK + slim runtime) to GHCR. Calls the opsta/.github reusable workflow.",
+  "iconName": "octicon-container",
+  "categories": [ "Containers", "Security", "Continuous integration" ],
+  "filePatterns": [ "base-images/.*Dockerfile.*" ]
+}

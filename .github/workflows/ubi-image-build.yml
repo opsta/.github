@@ -1,0 +1,124 @@
+# =============================================================================
+# REUSABLE workflow — hardened UBI base image build/scan/CIS/publish to GHCR.
+# Lives in opsta/.github so any Opsta repo can call it:
+#
+#   jobs:
+#     build:
+#       uses: opsta/.github/.github/workflows/ubi-image-build.yml@main
+#       with:
+#         images: >-
+#           [{"runtime":"nodejs-22-ubi9","role":"sdk","rh":"ubi9/nodejs-22"},
+#            {"runtime":"nodejs-22-ubi9","role":"runtime","rh":"ubi9/nodejs-22-minimal"}]
+#       secrets: inherit          # passes REDHAT_REGISTRY_USER/TOKEN if present
+#
+# PRs build+scan+validate (no push); pushes happen only on the default branch.
+# Falls back to public registry.access.redhat.com when the Red Hat secrets are absent.
+# =============================================================================
+name: ubi-image-build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: 'JSON array of {runtime, role, rh} build targets'
+        required: true
+        type: string
+      base-images-dir:
+        description: 'Directory holding <runtime>/Dockerfile.<role>'
+        required: false
+        default: 'base-images'
+        type: string
+      cis-validate-path:
+        description: 'Path to the CIS validator script'
+        required: false
+        default: 'scripts/cis-validate.sh'
+        type: string
+    secrets:
+      REDHAT_REGISTRY_USER:
+        required: false
+      REDHAT_REGISTRY_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GHCR_NS: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.images) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install scanners (trivy + hadolint)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          sudo curl -sfL -o /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          sudo chmod +x /usr/local/bin/hadolint
+
+      - name: Select base registry (registry.redhat.io if secrets, else public)
+        id: reg
+        run: |
+          if [ -n "${{ secrets.REDHAT_REGISTRY_TOKEN }}" ]; then
+            echo "${{ secrets.REDHAT_REGISTRY_TOKEN }}" | docker login registry.redhat.io \
+              -u "${{ secrets.REDHAT_REGISTRY_USER }}" --password-stdin
+            echo "base=registry.redhat.io" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=registry.access.redhat.com" >> "$GITHUB_OUTPUT"
+            echo "::notice::Red Hat secrets not set - using public registry.access.redhat.com"
+          fi
+
+      - name: Compute tags
+        id: tags
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      - name: Hadolint
+        run: hadolint "${{ inputs.base-images-dir }}/${{ matrix.runtime }}/Dockerfile.${{ matrix.role }}"
+
+      - name: Build
+        env:
+          IMG: ${{ env.GHCR_NS }}/${{ matrix.runtime }}-${{ matrix.role }}
+        run: |
+          docker build \
+            --build-arg BASE_IMAGE=${{ steps.reg.outputs.base }}/${{ matrix.rh }}:latest \
+            -f "${{ inputs.base-images-dir }}/${{ matrix.runtime }}/Dockerfile.${{ matrix.role }}" \
+            -t "$IMG:${{ steps.tags.outputs.month }}" -t "$IMG:edge" \
+            "${{ inputs.base-images-dir }}/${{ matrix.runtime }}/"
+
+      - name: Trivy scan (fail on fixable Critical/High)
+        env:
+          IMG: ${{ env.GHCR_NS }}/${{ matrix.runtime }}-${{ matrix.role }}
+        run: |
+          trivy image --quiet --scanners vuln --ignore-unfixed \
+            --severity CRITICAL,HIGH --exit-code 1 "$IMG:${{ steps.tags.outputs.month }}"
+
+      - name: CIS Section 4 validation
+        env:
+          IMG: ${{ env.GHCR_NS }}/${{ matrix.runtime }}-${{ matrix.role }}
+        run: |
+          chmod +x "${{ inputs.cis-validate-path }}"
+          "${{ inputs.cis-validate-path }}" "$IMG:${{ steps.tags.outputs.month }}" \
+            "${{ inputs.base-images-dir }}/${{ matrix.runtime }}/Dockerfile.${{ matrix.role }}" \
+            --report "cis-${{ matrix.runtime }}-${{ matrix.role }}.md"
+
+      - name: Upload CIS report
+        uses: actions/upload-artifact@v7
+        with:
+          name: cis-${{ matrix.runtime }}-${{ matrix.role }}
+          path: cis-${{ matrix.runtime }}-${{ matrix.role }}.md
+
+      - name: Push to GHCR (default branch only)
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          IMG: ${{ env.GHCR_NS }}/${{ matrix.runtime }}-${{ matrix.role }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMG:${{ steps.tags.outputs.month }}"
+          docker push "$IMG:edge"
+          echo "### Published \`$IMG:${{ steps.tags.outputs.month }}\`" >> "$GITHUB_STEP_SUMMARY"
