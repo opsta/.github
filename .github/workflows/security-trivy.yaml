@@ -52,7 +52,7 @@ jobs:
       TRIVY_NON_SSL: ${{ inputs.registry_insecure }}
       REPORT: ${{ inputs.report_name != '' && inputs.report_name || format('trivy-{0}', inputs.scan_type) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: ${{ inputs.scan_type != 'image' }}
       - name: Install Trivy + jq
         run: |

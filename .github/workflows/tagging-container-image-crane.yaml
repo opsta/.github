@@ -115,8 +115,15 @@ jobs:
           [ -n "${REG_PASS:-}" ] && HAS_AUTH=1
 
           run_copy() {
-            SRC="$1"; DST="$2"; JN="crane-$3-${{ github.run_id }}"
+            SRC="$1"; DST="$2"
+            # Unique Job name PER image — a matrix of services (api/worker) calls this reusable in
+            # parallel with the SAME github.run_id, so a run_id-only name collides ("spec.template
+            # field is immutable" on the 2nd apply). Hash the source ref to disambiguate; delete any
+            # stale Job (rerun with same name) first.
+            H=$(printf '%s' "${SRC}" | md5sum | cut -c1-8)
+            JN="crane-$3-${{ github.run_id }}-${H}"
             echo "→ crane copy ${SRC} -> ${DST} (Job ${JN})"
+            kubectl -n "$NS" delete job "${JN}" --ignore-not-found >/dev/null 2>&1 || true
             ENV_LINE=""; VOL_MOUNT=""; VOL=""
             if [ -n "$HAS_AUTH" ]; then
               ENV_LINE='env: [{name: DOCKER_CONFIG, value: /dockercfg}]'

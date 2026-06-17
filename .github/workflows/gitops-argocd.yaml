@@ -70,7 +70,7 @@ jobs:
           echo "::error title=Container image tag not found::Container image tag ${{ inputs.image_tag }} does not exist"
           exit 1
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Update Image Version in Helm Value file
         uses: fjogeleit/yaml-update-action@main
         with:
