@@ -42,7 +42,7 @@ on:
         description: Pull/push over HTTP / skip registry TLS verify (adds crane --insecure).
       crane_image:
         type: string
-        default: gcr.io/go-containerregistry/crane:v0.20.2
+        default: gcr.io/go-containerregistry/crane:v0.20.3
         description: crane (go-containerregistry) image the in-cluster Job runs.
       build_namespace:
         type: string
