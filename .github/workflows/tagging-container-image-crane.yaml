@@ -109,16 +109,21 @@ jobs:
           set -eu
           FLAGS_JSON=""
           [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS_JSON="\"--insecure\","
-          SA_LINE=""; CRANE_IMG="${{ inputs.crane_image }}"
-          if [ -n "${{ inputs.crane_service_account }}" ]; then
-            SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
-            # gcrane = crane built with the Google keychain: it authenticates to GCR/Artifact Registry
-            # via ADC → the GKE Workload Identity metadata token (no docker config / GOOGLE_APPLICATION_
-            # CREDENTIALS). Swap crane→gcrane on the cloud path; same `copy` interface.
-            CRANE_IMG="$(printf '%s' "$CRANE_IMG" | sed 's#/crane:#/gcrane:#')"
-          fi
+          SA_LINE=""
           HAS_AUTH=""
           [ -n "${REG_PASS:-}" ] && HAS_AUTH=1
+          if [ -n "${{ inputs.crane_service_account }}" ]; then
+            SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
+            # crane/gcrane's Go ADC can't find GKE metadata creds in-pod. The runner IS Workload-Identity-
+            # bound, so fetch an Artifact Registry token here and hand crane a STATIC docker auth (same
+            # approach as the kaniko build). Plain crane then uses it via DOCKER_CONFIG.
+            REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
+            TOKEN="$(curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')"
+            kubectl -n "$NS" create secret generic "$AUTH_SECRET" \
+              --from-literal=config.json="{\"auths\":{\"${REGISTRY}\":{\"username\":\"oauth2accesstoken\",\"password\":\"${TOKEN}\"}}}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            HAS_AUTH=1
+          fi
 
           run_copy() {
             SRC="$1"; DST="$2"
@@ -153,7 +158,7 @@ jobs:
                 ${SA_LINE}
                 containers:
                   - name: crane
-                    image: ${CRANE_IMG}
+                    image: ${{ inputs.crane_image }}
                     args: [ "copy", ${FLAGS_JSON} "${SRC}", "${DST}" ]
                     ${ENV_LINE}
                     ${VOL_MOUNT}
