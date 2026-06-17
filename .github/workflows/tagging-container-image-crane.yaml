@@ -1,16 +1,23 @@
-name: Reusable - Tag container image (crane)
+name: Reusable - Tag container image (crane, in-cluster)
 
-# Promote-by-retag: copy an existing image to a new tag without rebuilding.
-# Mirrors versa-gitlab-cicd hidden-jobs/tagging-container-image-crane.yaml.
-# Runs on a runner with network reach to the registry (ARC for in-cluster registries).
+# Promote-by-retag: copy an existing image to a new tag WITHOUT rebuilding (build-once /
+# promote-by-copy). Runs crane as an in-cluster Kubernetes Job (like build-container-image-kaniko),
+# NOT on the runner — so it gets ClusterFirst DNS and can resolve an in-cluster registry hostname
+# (e.g. a k3d registry). The ARC runner only submits the Job; the runner's ServiceAccount must have
+# RBAC to manage Jobs in build_namespace.
+#
+# Why a Job (not on-runner crane): ARC ephemeral runner pods inherit the node host resolver, which
+# can't resolve in-cluster registry hostnames; the kaniko build already runs in-cluster for the same
+# reason. On GKE the registry is public DNS (Artifact Registry), so either path works — the Job is
+# provider-neutral and lets crane reach AR via a Workload-Identity-bound ServiceAccount.
 
 on:
   workflow_call:
     inputs:
       runner:
         type: string
-        default: ubuntu-latest
-        description: Runner label to execute on (e.g. ubuntu-latest or a self-hosted/ARC scale-set).
+        required: true
+        description: Runner label with in-cluster kubectl access (e.g. an ARC scale set).
       image:
         type: string
         required: true
@@ -33,41 +40,122 @@ on:
         type: boolean
         default: false
         description: Pull/push over HTTP / skip registry TLS verify (adds crane --insecure).
-      crane_version:
+      crane_image:
         type: string
-        default: v0.20.2
-        description: go-containerregistry (crane) release version to install on the runner.
+        default: gcr.io/go-containerregistry/crane:v0.20.2
+        description: crane (go-containerregistry) image the in-cluster Job runs.
+      build_namespace:
+        type: string
+        default: ci
+        description: Kubernetes namespace where the crane Job (and optional auth secret) is created.
+      kubectl_version:
+        type: string
+        default: v1.31.4
+        description: kubectl release version downloaded onto the runner to submit the Job.
+      crane_service_account:
+        type: string
+        default: ""
+        description: >-
+          Optional ServiceAccount for the crane Job pod. Set to a Workload-Identity-bound KSA so
+          crane reaches a cloud registry (Artifact Registry) via the GKE metadata token (crane's
+          default keychain auto-authenticates *.pkg.dev / *.gcr.io). Empty = namespace default SA.
+      job_timeout:
+        type: string
+        default: "300s"
+        description: kubectl wait timeout for each crane copy Job.
     secrets:
       registry_username:
         required: false
-        description: Registry username for crane auth login (when the registry requires auth).
+        description: Registry username for crane auth (when the registry requires basic auth).
       registry_password:
         required: false
-        description: Registry password/token for crane auth login; presence triggers a login before copy.
+        description: Registry password/token; presence mounts a docker config into the Job (DOCKER_CONFIG).
 
 jobs:
   retag:
     runs-on: ${{ inputs.runner }}
+    env:
+      NS: ${{ inputs.build_namespace }}
+      AUTH_SECRET: crane-auth-${{ github.run_id }}
     steps:
-      - name: Install crane
+      - name: Install kubectl (writable PATH; ARC runner is non-root)
         run: |
           set -eu
           BIN="$RUNNER_TEMP/bin"; mkdir -p "$BIN"
-          curl -sSL "https://github.com/google/go-containerregistry/releases/download/${{ inputs.crane_version }}/go-containerregistry_Linux_x86_64.tar.gz" \
-            | tar -xz -C "$BIN" crane
-          chmod +x "$BIN/crane"; echo "$BIN" >> "$GITHUB_PATH"
-      - name: Retag
+          curl -sSLo "$BIN/kubectl" "https://dl.k8s.io/release/${{ inputs.kubectl_version }}/bin/linux/amd64/kubectl"
+          chmod +x "$BIN/kubectl"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: Optional registry auth secret (basic auth → docker config)
+        if: ${{ secrets.registry_password != '' }}
         run: |
           set -eu
-          FLAGS=""; [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS="--insecure"
-          if [ -n "${{ secrets.registry_password }}" ]; then
-            REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
-            crane auth login $FLAGS -u "${{ secrets.registry_username }}" -p "${{ secrets.registry_password }}" "$REGISTRY"
-          fi
-          crane copy $FLAGS "${{ inputs.image }}:${{ inputs.tag_from }}" "${{ inputs.image }}:${{ inputs.tag_to }}"
+          REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
+          AUTH=$(printf '%s:%s' "${{ secrets.registry_username }}" "${{ secrets.registry_password }}" | base64 -w0)
+          CFG=$(printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$AUTH")
+          kubectl -n "$NS" create secret generic "$AUTH_SECRET" \
+            --from-literal=config.json="$CFG" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Crane copy via in-cluster Job(s)
+        run: |
+          set -eu
+          FLAGS_JSON=""
+          [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS_JSON="\"--insecure\","
+          SA_LINE=""
+          [ -n "${{ inputs.crane_service_account }}" ] && SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
+          HAS_AUTH=""
+          [ -n "${{ secrets.registry_password }}" ] && HAS_AUTH=1
+
+          run_copy() {
+            SRC="$1"; DST="$2"; JN="crane-$3-${{ github.run_id }}"
+            echo "→ crane copy ${SRC} -> ${DST} (Job ${JN})"
+            ENV_LINE=""; VOL_MOUNT=""; VOL=""
+            if [ -n "$HAS_AUTH" ]; then
+              ENV_LINE='env: [{name: DOCKER_CONFIG, value: /dockercfg}]'
+              VOL_MOUNT='volumeMounts: [{name: dockercfg, mountPath: /dockercfg, readOnly: true}]'
+              VOL="volumes: [{name: dockercfg, secret: {secretName: ${AUTH_SECRET}, items: [{key: config.json, path: config.json}]}}]"
+            fi
+            cat <<YAML | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${JN}
+            namespace: ${NS}
+            labels:
+              app.kubernetes.io/managed-by: opsta-ci
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 1800
+            template:
+              spec:
+                restartPolicy: Never
+                ${SA_LINE}
+                containers:
+                  - name: crane
+                    image: ${{ inputs.crane_image }}
+                    args: [ "copy", ${FLAGS_JSON} "${SRC}", "${DST}" ]
+                    ${ENV_LINE}
+                    ${VOL_MOUNT}
+                ${VOL}
+          YAML
+            if ! kubectl -n "$NS" wait --for=condition=complete "job/${JN}" --timeout=${{ inputs.job_timeout }}; then
+              echo "::error title=crane copy failed::${SRC} -> ${DST}"
+              kubectl -n "$NS" logs "job/${JN}" --tail=40 || true
+              kubectl -n "$NS" delete job "${JN}" --ignore-not-found
+              exit 1
+            fi
+            kubectl -n "$NS" logs "job/${JN}" --tail=4 || true
+            kubectl -n "$NS" delete job "${JN}" --ignore-not-found
+          }
+
+          run_copy "${{ inputs.image }}:${{ inputs.tag_from }}" "${{ inputs.image }}:${{ inputs.tag_to }}" "to"
           echo "✓ ${{ inputs.image }}:${{ inputs.tag_from }} -> :${{ inputs.tag_to }}"
-          # Optional moving alias (e.g. uat) updated to the promoted image for the next stage's tag_from.
           if [ -n "${{ inputs.moving_tag }}" ]; then
-            crane copy $FLAGS "${{ inputs.image }}:${{ inputs.tag_to }}" "${{ inputs.image }}:${{ inputs.moving_tag }}"
+            run_copy "${{ inputs.image }}:${{ inputs.tag_to }}" "${{ inputs.image }}:${{ inputs.moving_tag }}" "mv"
             echo "✓ ${{ inputs.image }}:${{ inputs.tag_to }} -> :${{ inputs.moving_tag }} (moving alias)"
           fi
+
+      - name: Cleanup auth secret
+        if: always()
+        run: kubectl -n "$NS" delete secret "$AUTH_SECRET" --ignore-not-found 2>/dev/null || true
