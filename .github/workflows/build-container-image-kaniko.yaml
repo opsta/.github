@@ -133,9 +133,20 @@ jobs:
           ARGS="${ARGS}]"
           # Optionally run the kaniko pod under a Workload-Identity-bound KSA so it
           # can push to a cloud registry (Artifact Registry) via the metadata token.
-          SA_LINE=""
+          SA_LINE=""; VOL_LINE=""; MOUNT_LINE=""
+          CFG_NAME="kaniko-dockercfg-${{ inputs.service }}-${{ github.run_id }}"
           if [ -n "${{ inputs.kaniko_service_account }}" ]; then
             SA_LINE="serviceAccountName: ${{ inputs.kaniko_service_account }}"
+            # kaniko's bundled docker-credential-gcr auto-handles gcr.io but NOT *.pkg.dev. Map the
+            # Artifact Registry host explicitly to the 'gcr' helper so kaniko authenticates to AR via
+            # the GKE Workload Identity metadata token (no GOOGLE_APPLICATION_CREDENTIALS needed).
+            # Ref: github.com/GoogleContainerTools/kaniko issues #1256/#1805/#1585.
+            REG_HOST="$(printf '%s' '${{ inputs.image }}' | cut -d/ -f1)"
+            kubectl -n "$NS" create configmap "$CFG_NAME" \
+              --from-literal=config.json="{\"credHelpers\":{\"${REG_HOST}\":\"gcr\"}}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            VOL_LINE='volumes: [{"name":"docker-config","configMap":{"name":"'"$CFG_NAME"'"}}]'
+            MOUNT_LINE='volumeMounts: [{"name":"docker-config","mountPath":"/kaniko/.docker/config.json","subPath":"config.json"}]'
           fi
           cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
@@ -152,10 +163,12 @@ jobs:
               spec:
                 restartPolicy: Never
                 ${SA_LINE}
+                ${VOL_LINE}
                 containers:
                   - name: kaniko
                     image: ${{ inputs.kaniko_image }}
                     args: ${ARGS}
+                    ${MOUNT_LINE}
                     env:
                       - name: GIT_USERNAME
                         value: x-access-token
@@ -168,9 +181,11 @@ jobs:
           if ! kubectl -n "$NS" wait --for=condition=complete "job/${JOB_NAME}" --timeout=${{ inputs.build_timeout }}; then
             echo "::error title=kaniko build failed::${{ inputs.service }}"
             kubectl -n "$NS" logs "job/${JOB_NAME}" --tail=60 || true
+            kubectl -n "$NS" delete configmap "$CFG_NAME" --ignore-not-found >/dev/null 2>&1 || true
             exit 1
           fi
           kubectl -n "$NS" logs "job/${JOB_NAME}" --tail=8 || true
+          kubectl -n "$NS" delete configmap "$CFG_NAME" --ignore-not-found >/dev/null 2>&1 || true
 
       - name: Resolve pushed image digest
         id: digest

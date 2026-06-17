@@ -109,8 +109,14 @@ jobs:
           set -eu
           FLAGS_JSON=""
           [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS_JSON="\"--insecure\","
-          SA_LINE=""
-          [ -n "${{ inputs.crane_service_account }}" ] && SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
+          SA_LINE=""; CRANE_IMG="${{ inputs.crane_image }}"
+          if [ -n "${{ inputs.crane_service_account }}" ]; then
+            SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
+            # gcrane = crane built with the Google keychain: it authenticates to GCR/Artifact Registry
+            # via ADC → the GKE Workload Identity metadata token (no docker config / GOOGLE_APPLICATION_
+            # CREDENTIALS). Swap crane→gcrane on the cloud path; same `copy` interface.
+            CRANE_IMG="$(printf '%s' "$CRANE_IMG" | sed 's#/crane:#/gcrane:#')"
+          fi
           HAS_AUTH=""
           [ -n "${REG_PASS:-}" ] && HAS_AUTH=1
 
@@ -147,7 +153,7 @@ jobs:
                 ${SA_LINE}
                 containers:
                   - name: crane
-                    image: ${{ inputs.crane_image }}
+                    image: ${CRANE_IMG}
                     args: [ "copy", ${FLAGS_JSON} "${SRC}", "${DST}" ]
                     ${ENV_LINE}
                     ${VOL_MOUNT}
