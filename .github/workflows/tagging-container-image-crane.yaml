@@ -87,17 +87,24 @@ jobs:
           echo "$BIN" >> "$GITHUB_PATH"
 
       - name: Optional registry auth secret (basic auth → docker config)
-        if: ${{ secrets.registry_password != '' }}
+        # NOTE: the `secrets` context is NOT allowed in a step-level `if:` (GitHub rejects it at
+        # workflow load → caller startup_failure). Pass via env and check in the shell instead.
+        env:
+          REG_USER: ${{ secrets.registry_username }}
+          REG_PASS: ${{ secrets.registry_password }}
         run: |
           set -eu
+          [ -n "${REG_PASS:-}" ] || { echo "no registry password → skip auth secret"; exit 0; }
           REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
-          AUTH=$(printf '%s:%s' "${{ secrets.registry_username }}" "${{ secrets.registry_password }}" | base64 -w0)
+          AUTH=$(printf '%s:%s' "$REG_USER" "$REG_PASS" | base64 -w0)
           CFG=$(printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$AUTH")
           kubectl -n "$NS" create secret generic "$AUTH_SECRET" \
             --from-literal=config.json="$CFG" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Crane copy via in-cluster Job(s)
+        env:
+          REG_PASS: ${{ secrets.registry_password }}
         run: |
           set -eu
           FLAGS_JSON=""
@@ -105,7 +112,7 @@ jobs:
           SA_LINE=""
           [ -n "${{ inputs.crane_service_account }}" ] && SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
           HAS_AUTH=""
-          [ -n "${{ secrets.registry_password }}" ] && HAS_AUTH=1
+          [ -n "${REG_PASS:-}" ] && HAS_AUTH=1
 
           run_copy() {
             SRC="$1"; DST="$2"; JN="crane-$3-${{ github.run_id }}"
