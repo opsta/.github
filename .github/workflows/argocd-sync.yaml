@@ -65,7 +65,12 @@ jobs:
               SYNC=$(echo "${JSON}" | jq -r '.status.sync.status // "Unknown"')
               HEALTH=$(echo "${JSON}" | jq -r '.status.health.status // "Unknown"')
               echo "[${ELAPSED}s] ${APP}: Sync=${SYNC} Health=${HEALTH}"
-              case "${HEALTH}" in Degraded|Missing) echo "::error::${APP} health=${HEALTH}"; exit 1;; esac
+              # Tolerate a transient Missing/Degraded in the first 30s: right after refresh ArgoCD can
+              # momentarily report Missing (resources not yet observed) before settling to Healthy.
+              # A genuinely stuck app still fails fast (after the grace window, within wait_timeout).
+              if [ "${ELAPSED}" -ge 30 ]; then
+                case "${HEALTH}" in Degraded|Missing) echo "::error::${APP} health=${HEALTH} (after 30s grace)"; exit 1;; esac
+              fi
               [ "${SYNC}" = "Synced" ] && [ "${HEALTH}" = "Healthy" ] && { echo "OK: ${APP}"; break; }
               sleep "${{ inputs.poll_interval }}"; ELAPSED=$((ELAPSED + ${{ inputs.poll_interval }}))
             done
