@@ -142,10 +142,12 @@ jobs:
             # the GKE Workload Identity metadata token (no GOOGLE_APPLICATION_CREDENTIALS needed).
             # Ref: github.com/GoogleContainerTools/kaniko issues #1256/#1805/#1585.
             REG_HOST="$(printf '%s' '${{ inputs.image }}' | cut -d/ -f1)"
-            kubectl -n "$NS" create configmap "$CFG_NAME" \
+            # Use a Secret (not a ConfigMap): the ARC runner SA's build-namespace Role grants secrets
+            # but not configmaps — and config.json is credentials-adjacent anyway.
+            kubectl -n "$NS" create secret generic "$CFG_NAME" \
               --from-literal=config.json="{\"credHelpers\":{\"${REG_HOST}\":\"gcr\"}}" \
               --dry-run=client -o yaml | kubectl apply -f -
-            VOL_LINE='volumes: [{"name":"docker-config","configMap":{"name":"'"$CFG_NAME"'"}}]'
+            VOL_LINE='volumes: [{"name":"docker-config","secret":{"secretName":"'"$CFG_NAME"'"}}]'
             MOUNT_LINE='volumeMounts: [{"name":"docker-config","mountPath":"/kaniko/.docker/config.json","subPath":"config.json"}]'
           fi
           cat <<YAML | kubectl apply -f -
@@ -181,11 +183,11 @@ jobs:
           if ! kubectl -n "$NS" wait --for=condition=complete "job/${JOB_NAME}" --timeout=${{ inputs.build_timeout }}; then
             echo "::error title=kaniko build failed::${{ inputs.service }}"
             kubectl -n "$NS" logs "job/${JOB_NAME}" --tail=60 || true
-            kubectl -n "$NS" delete configmap "$CFG_NAME" --ignore-not-found >/dev/null 2>&1 || true
+            kubectl -n "$NS" delete secret "$CFG_NAME" --ignore-not-found >/dev/null 2>&1 || true
             exit 1
           fi
           kubectl -n "$NS" logs "job/${JOB_NAME}" --tail=8 || true
-          kubectl -n "$NS" delete configmap "$CFG_NAME" --ignore-not-found >/dev/null 2>&1 || true
+          kubectl -n "$NS" delete secret "$CFG_NAME" --ignore-not-found >/dev/null 2>&1 || true
 
       - name: Resolve pushed image digest
         id: digest
