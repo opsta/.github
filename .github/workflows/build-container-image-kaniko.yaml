@@ -148,7 +148,8 @@ jobs:
               --dry-run=client -o yaml | kubectl apply -f -
             VOL_LINE='volumes: [{"name":"docker-config","secret":{"secretName":"'"$CFG_NAME"'"}}]'
             MOUNT_LINE='volumeMounts: [{"name":"docker-config","mountPath":"/kaniko/.docker/config.json","subPath":"config.json"}]'
-            METADATA_ENV=$'\n                      - name: GCE_METADATA_HOST\n                        value: "169.254.169.254"'
+            # printf (POSIX) not $'…' (bashism) — the runner shell left $'\n' literal and broke the YAML.
+            METADATA_ENV="$(printf '\n                      - name: GCE_METADATA_HOST\n                        value: "169.254.169.254"')"
           fi
           cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
