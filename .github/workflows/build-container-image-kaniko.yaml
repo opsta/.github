@@ -137,7 +137,7 @@ jobs:
           ARGS="${ARGS}]"
           # Optionally run the kaniko pod under a Workload-Identity-bound KSA so it
           # can push to a cloud registry (Artifact Registry) via the metadata token.
-          SA_LINE=""; VOL_LINE=""; MOUNT_LINE=""
+          SA_LINE=""; VOL_LINE=""; MOUNT_LINE=""; INIT_LINE=""
           # Container env as FLOW-style JSON on ONE line — immune to heredoc indentation (block-style
           # injection of extra env entries kept breaking YAML in the run-block heredoc).
           ENV_JSON='[{"name":"GIT_USERNAME","value":"x-access-token"},{"name":"GIT_PASSWORD","valueFrom":{"secretKeyRef":{"name":"'"${SECRET_NAME}"'","key":"token"}}}'
@@ -156,6 +156,11 @@ jobs:
             VOL_LINE='volumes: [{"name":"docker-config","secret":{"secretName":"'"$CFG_NAME"'"}}]'
             MOUNT_LINE='volumeMounts: [{"name":"docker-config","mountPath":"/kaniko/.docker/config.json","subPath":"config.json"}]'
             ENV_JSON="${ENV_JSON},{\"name\":\"GCE_METADATA_HOST\",\"value\":\"169.254.169.254\"}"
+            # Readiness gate: kaniko checks push permission at STARTUP, which races the GKE metadata
+            # server's per-pod Workload-Identity readiness (a few seconds after pod start) → i/o timeout.
+            # Wait (curl only, no gcloud/token) until the metadata token endpoint answers, THEN run kaniko
+            # with its native credHelpers auth. Flow-style JSON to stay heredoc-indentation-proof.
+            INIT_LINE='initContainers: [{"name":"wait-metadata","image":"curlimages/curl:8.9.1","command":["sh","-c"],"args":["i=0; until curl -sf -m 3 -H \"Metadata-Flavor: Google\" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 30 ] && echo metadata-never-ready && exit 1; echo waiting-metadata $i; sleep 2; done; echo metadata-ready"]}]'
           fi
           ENV_JSON="${ENV_JSON}]"
           cat <<YAML | kubectl apply -f -
@@ -173,6 +178,7 @@ jobs:
               spec:
                 restartPolicy: Never
                 ${SA_LINE}
+                ${INIT_LINE}
                 ${VOL_LINE}
                 containers:
                   - name: kaniko
