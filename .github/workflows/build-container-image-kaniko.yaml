@@ -133,24 +133,27 @@ jobs:
           ARGS="${ARGS}]"
           # Optionally run the kaniko pod under a Workload-Identity-bound KSA so it
           # can push to a cloud registry (Artifact Registry) via the metadata token.
-          SA_LINE=""; VOL_LINE=""; MOUNT_LINE=""; METADATA_ENV=""
+          SA_LINE=""; VOL_LINE=""; MOUNT_LINE=""
+          # Container env as FLOW-style JSON on ONE line — immune to heredoc indentation (block-style
+          # injection of extra env entries kept breaking YAML in the run-block heredoc).
+          ENV_JSON='[{"name":"GIT_USERNAME","value":"x-access-token"},{"name":"GIT_PASSWORD","valueFrom":{"secretKeyRef":{"name":"'"${SECRET_NAME}"'","key":"token"}}}'
           CFG_NAME="kaniko-dockercfg-${{ inputs.service }}-${{ github.run_id }}"
           if [ -n "${{ inputs.kaniko_service_account }}" ]; then
             SA_LINE="serviceAccountName: ${{ inputs.kaniko_service_account }}"
             REG_HOST="$(printf '%s' '${{ inputs.image }}' | cut -d/ -f1)"
             # kaniko bundles docker-credential-gcr; map the cloud-registry host to it. Its Go ADC can't
             # resolve metadata.google.internal via DNS in-pod (→ "could not find default credentials"),
-            # so GCE_METADATA_HOST=169.254.169.254 (env below) points it straight at the metadata IP and
-            # the Workload-Identity token flows — no static token / gcloud. Verified on GKE→Artifact
-            # Registry. Refs kaniko #1256/#1805/#1889. Secret not ConfigMap (runner SA Role grants secrets).
+            # so GCE_METADATA_HOST=169.254.169.254 points it straight at the metadata IP and the
+            # Workload-Identity token flows — no static token / gcloud. Verified on GKE→Artifact Registry.
+            # Refs kaniko #1256/#1805/#1889. Secret not ConfigMap (runner SA Role grants secrets).
             kubectl -n "$NS" create secret generic "$CFG_NAME" \
               --from-literal=config.json="{\"credHelpers\":{\"${REG_HOST}\":\"gcr\"}}" \
               --dry-run=client -o yaml | kubectl apply -f -
             VOL_LINE='volumes: [{"name":"docker-config","secret":{"secretName":"'"$CFG_NAME"'"}}]'
             MOUNT_LINE='volumeMounts: [{"name":"docker-config","mountPath":"/kaniko/.docker/config.json","subPath":"config.json"}]'
-            # printf (POSIX) not $'…' (bashism) — the runner shell left $'\n' literal and broke the YAML.
-            METADATA_ENV="$(printf '\n                      - name: GCE_METADATA_HOST\n                        value: "169.254.169.254"')"
+            ENV_JSON="${ENV_JSON},{\"name\":\"GCE_METADATA_HOST\",\"value\":\"169.254.169.254\"}"
           fi
+          ENV_JSON="${ENV_JSON}]"
           cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
           kind: Job
@@ -172,14 +175,7 @@ jobs:
                     image: ${{ inputs.kaniko_image }}
                     args: ${ARGS}
                     ${MOUNT_LINE}
-                    env:
-                      - name: GIT_USERNAME
-                        value: x-access-token
-                      - name: GIT_PASSWORD
-                        valueFrom:
-                          secretKeyRef:
-                            name: ${SECRET_NAME}
-                            key: token${METADATA_ENV}
+                    env: ${ENV_JSON}
           YAML
           if ! kubectl -n "$NS" wait --for=condition=complete "job/${JOB_NAME}" --timeout=${{ inputs.build_timeout }}; then
             echo "::error title=kaniko build failed::${{ inputs.service }}"
