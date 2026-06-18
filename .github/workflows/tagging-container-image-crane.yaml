@@ -109,20 +109,17 @@ jobs:
           set -eu
           FLAGS_JSON=""
           [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS_JSON="\"--insecure\","
-          SA_LINE=""
+          SA_LINE=""; CRANE_IMG="${{ inputs.crane_image }}"; GCMD_ENV=""
           HAS_AUTH=""
           [ -n "${REG_PASS:-}" ] && HAS_AUTH=1
           if [ -n "${{ inputs.crane_service_account }}" ]; then
             SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
-            # crane/gcrane's Go ADC can't find GKE metadata creds in-pod. The runner IS Workload-Identity-
-            # bound, so fetch an Artifact Registry token here and hand crane a STATIC docker auth (same
-            # approach as the kaniko build). Plain crane then uses it via DOCKER_CONFIG.
-            REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
-            TOKEN="$(curl -s -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')"
-            kubectl -n "$NS" create secret generic "$AUTH_SECRET" \
-              --from-literal=config.json="{\"auths\":{\"${REGISTRY}\":{\"username\":\"oauth2accesstoken\",\"password\":\"${TOKEN}\"}}}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            HAS_AUTH=1
+            # gcrane = crane with the Google keychain (GCR/Artifact Registry auth). Its Go ADC can't
+            # resolve metadata.google.internal via DNS in-pod, so GCE_METADATA_HOST=169.254.169.254 (env
+            # below) points it at the metadata IP → the Workload-Identity token flows. Verified on
+            # GKE→AR. Swap crane→gcrane on the cloud path; same `copy` interface.
+            CRANE_IMG="$(printf '%s' "$CRANE_IMG" | sed 's#/crane:#/gcrane:#')"
+            GCMD_ENV=1
           fi
 
           run_copy() {
@@ -140,6 +137,8 @@ jobs:
               ENV_LINE='env: [{name: DOCKER_CONFIG, value: /dockercfg}]'
               VOL_MOUNT='volumeMounts: [{name: dockercfg, mountPath: /dockercfg, readOnly: true}]'
               VOL="volumes: [{name: dockercfg, secret: {secretName: ${AUTH_SECRET}, items: [{key: config.json, path: config.json}]}}]"
+            elif [ -n "$GCMD_ENV" ]; then
+              ENV_LINE='env: [{name: GCE_METADATA_HOST, value: "169.254.169.254"}]'
             fi
             cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
@@ -158,7 +157,7 @@ jobs:
                 ${SA_LINE}
                 containers:
                   - name: crane
-                    image: ${{ inputs.crane_image }}
+                    image: ${CRANE_IMG}
                     args: [ "copy", ${FLAGS_JSON} "${SRC}", "${DST}" ]
                     ${ENV_LINE}
                     ${VOL_MOUNT}

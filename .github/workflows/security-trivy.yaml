@@ -56,6 +56,10 @@ jobs:
       TRIVY_NON_SSL: ${{ inputs.registry_insecure }}
       REPORT: ${{ inputs.report_name != '' && inputs.report_name || format('trivy-{0}', inputs.scan_type) }}
       IUF: ${{ inputs.ignore_unfixed && '--ignore-unfixed' || '' }}
+      # image-scan on GKE pulls from Artifact Registry; trivy's Go ADC can't resolve
+      # metadata.google.internal via DNS on the runner, so point it at the metadata IP. Workload
+      # Identity then provides the AR token. Harmless off-GCP (only consulted for GCP-registry auth).
+      GCE_METADATA_HOST: "169.254.169.254"
     steps:
       # Always checkout — even for image scans — so a repo-root `.trivyignore` (documented accepted
       # findings) is honoured by every scan type (Trivy auto-reads .trivyignore from the working dir).
