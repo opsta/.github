@@ -32,6 +32,13 @@ on:
         type: string
         default: .image.tag
         description: yq path of the tag field inside values_file_template.
+      extra_tag_paths:
+        type: string
+        default: ""
+        description: >-
+          Optional additional yq paths in the SAME values_file_template set to the same image_tag_value
+          (space/comma-separated, e.g. ".vars.APP_VERSION"). Use to surface the deployed tag to the app
+          as an env var so a version-aware acceptance gate (pull-wait) can confirm the new image is live.
       manifest_file_template:
         type: string
         default: ""
@@ -44,10 +51,24 @@ on:
         type: string
         default: main
         description: Branch of the GitOps repo to check out, commit, and push the tag bump to.
+      gitops_repo:
+        type: string
+        default: ""
+        description: >-
+          Cross-repo target — the GitOps repo to bump (e.g. org/<service>-iac for the v2.0 src/IaC split).
+          Empty = the caller's own repo (back-compat, single-repo app). Cross-repo writes require the
+          gitops_token secret (a GitHub App installation token with contents:write on the target repo).
       commit_message:
         type: string
         default: ""
         description: Commit message for the tag bump; defaults to a generated 'ci deploy <tag> [skip ci]' message when empty.
+    secrets:
+      gitops_token:
+        required: false
+        description: >-
+          Token used to checkout AND push the GitOps repo. For cross-repo writes (gitops_repo set to a
+          separate <service>-iac repo) pass a GitHub App installation token with contents:write on it.
+          When omitted, falls back to the caller's GITHUB_TOKEN (works only for the caller's own repo).
 
 jobs:
   deploy:
@@ -57,7 +78,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          repository: ${{ inputs.gitops_repo || github.repository }}
           ref: ${{ inputs.gitops_branch }}
+          token: ${{ secrets.gitops_token || github.token }}
       - name: Install yq
         run: |
           set -eu
@@ -74,6 +97,13 @@ jobs:
               VF="${{ inputs.values_file_template }}"; VF="${VF//__SERVICE__/$SVC}"
               yq -i "${{ inputs.image_tag_path }} = \"${TAG}\"" "$VF"
               echo "values: $VF -> ${TAG}"
+              # Additional paths (e.g. .vars.APP_VERSION) bumped to the same unique tag so the app can
+              # report the deployed version for a pull-wait acceptance gate. Split on commas/whitespace.
+              for P in $(printf '%s' "${{ inputs.extra_tag_paths }}" | tr ', ' '\n\n'); do
+                [ -n "$P" ] || continue
+                yq -i "${P} = \"${TAG}\"" "$VF"
+                echo "values: $VF ${P} -> ${TAG}"
+              done
             fi
             if [ -n "${{ inputs.manifest_file_template }}" ] && [ -n "${{ inputs.image_name_template }}" ]; then
               MF="${{ inputs.manifest_file_template }}"; MF="${MF//__SERVICE__/$SVC}"
@@ -91,7 +121,11 @@ jobs:
           MSG="${{ inputs.commit_message }}"
           [ -n "$MSG" ] || MSG="ci: deploy ${{ inputs.image_tag_value }} [skip ci]"
           git commit -m "$MSG" || { echo "no changes to commit"; exit 0; }
+          pushed=0
           for i in 1 2 3 4 5; do
-            git push origin "HEAD:${{ inputs.gitops_branch }}" && break
+            if git push origin "HEAD:${{ inputs.gitops_branch }}"; then pushed=1; break; fi
             echo "push attempt $i failed; rebasing..."; git pull --rebase origin "${{ inputs.gitops_branch }}"
           done
+          # Fail loudly if every attempt failed — otherwise the loop ends and the step exits 0,
+          # reporting a green deploy that never committed the tag bump.
+          [ "$pushed" = 1 ] || { echo "::error::gitops push failed after retries"; exit 1; }
