@@ -38,10 +38,30 @@ on:
           Use http:// instead of https:// for the ArgoCD API — for clusters where argocd-server
           runs with server.insecure=true (plain HTTP, e.g. behind a TLS-terminating gateway),
           common for in-cluster (.svc) endpoints. Default false = https://.
+      expected_revision:
+        type: string
+        default: ""
+        description: >-
+          App-agnostic rollout-confirm: when set (or derived from gitops_repo), each app must report
+          .status.sync.revision matching this commit (prefix) IN ADDITION to Synced+Healthy — so a
+          stale Synced+Healthy can't pass before the new GitOps commit is actually applied.
+      gitops_repo:
+        type: string
+        default: ""
+        description: >-
+          GitOps repo (org/name) whose branch HEAD becomes expected_revision when expected_revision is
+          empty (derived via git ls-remote). One repo HEAD covers a whole matrix of per-service commits.
+      gitops_branch:
+        type: string
+        default: main
+        description: Branch to read HEAD from when deriving expected_revision from gitops_repo.
     secrets:
       argocd_token:
         required: true
         description: ArgoCD API auth token (bearer) for the refresh and status calls.
+      gitops_token:
+        required: false
+        description: Token for git ls-remote of a private gitops_repo (GitHub App installation token / PAT).
 
 jobs:
   sync:
@@ -50,28 +70,43 @@ jobs:
       - name: Refresh & wait for apps
         env:
           ARGOCD_TOKEN: ${{ secrets.argocd_token }}
+          GITOPS_TOKEN: ${{ secrets.gitops_token }}
         run: |
           set -eu
           K=""; [ "${{ inputs.tls_insecure }}" = "true" ] && K="-k"
           SCHEME=https; [ "${{ inputs.argocd_insecure }}" = "true" ] && SCHEME=http
           API="${SCHEME}://${{ inputs.argocd_server }}/api/v1/applications"
           AUTH="Authorization: Bearer ${ARGOCD_TOKEN}"
+          # Rollout-confirm revision: explicit expected_revision, else the gitops repo branch HEAD (one
+          # HEAD covers a whole matrix of per-service commits). Empty → Synced+Healthy only (back-compat).
+          REV="${{ inputs.expected_revision }}"
+          if [ -z "$REV" ] && [ -n "${{ inputs.gitops_repo }}" ]; then
+            GAUTH=""; [ -n "${GITOPS_TOKEN:-}" ] && GAUTH="x-access-token:${GITOPS_TOKEN}@"
+            REV=$(git ls-remote "https://${GAUTH}github.com/${{ inputs.gitops_repo }}" "${{ inputs.gitops_branch }}" | cut -f1)
+            echo "expected_revision=${REV} (HEAD of ${{ inputs.gitops_repo }}@${{ inputs.gitops_branch }})"
+          fi
           for APP in ${{ inputs.app_names }}; do
             echo "Refreshing ${APP}..."
-            curl -sf $K -H "${AUTH}" "${API}/${APP}?refresh=normal" >/dev/null
+            # Tolerate a transient refresh failure (|| true) — set -e would otherwise abort the whole job.
+            curl -sf $K -H "${AUTH}" "${API}/${APP}?refresh=normal" >/dev/null || true
             ELAPSED=0
             while [ "${ELAPSED}" -lt "${{ inputs.wait_timeout }}" ]; do
-              JSON=$(curl -sf $K -H "${AUTH}" "${API}/${APP}")
+              # A transient API blip (5xx/timeout) must NOT abort under set -e — sleep and retry the poll.
+              JSON=$(curl -sf $K -H "${AUTH}" "${API}/${APP}") || { echo "[${ELAPSED}s] ${APP}: status fetch failed; retrying"; sleep "${{ inputs.poll_interval }}"; ELAPSED=$((ELAPSED + ${{ inputs.poll_interval }})); continue; }
               SYNC=$(echo "${JSON}" | jq -r '.status.sync.status // "Unknown"')
               HEALTH=$(echo "${JSON}" | jq -r '.status.health.status // "Unknown"')
-              echo "[${ELAPSED}s] ${APP}: Sync=${SYNC} Health=${HEALTH}"
+              REVISION=$(echo "${JSON}" | jq -r '.status.sync.revision // ""')
+              # When a target revision is set, require the app to have actually synced TO it (prefix match)
+              # so a pre-existing Synced+Healthy on the OLD commit cannot false-green the rollout.
+              REVOK=1; if [ -n "$REV" ]; then case "$REVISION" in "${REV}"*) REVOK=1;; *) REVOK=0;; esac; fi
+              echo "[${ELAPSED}s] ${APP}: Sync=${SYNC} Health=${HEALTH}${REV:+ Rev=${REVISION}}"
               # Tolerate a transient Missing/Degraded in the first 30s: right after refresh ArgoCD can
               # momentarily report Missing (resources not yet observed) before settling to Healthy.
               # A genuinely stuck app still fails fast (after the grace window, within wait_timeout).
               if [ "${ELAPSED}" -ge 30 ]; then
                 case "${HEALTH}" in Degraded|Missing) echo "::error::${APP} health=${HEALTH} (after 30s grace)"; exit 1;; esac
               fi
-              [ "${SYNC}" = "Synced" ] && [ "${HEALTH}" = "Healthy" ] && { echo "OK: ${APP}"; break; }
+              [ "${SYNC}" = "Synced" ] && [ "${HEALTH}" = "Healthy" ] && [ "${REVOK}" = "1" ] && { echo "OK: ${APP}"; break; }
               sleep "${{ inputs.poll_interval }}"; ELAPSED=$((ELAPSED + ${{ inputs.poll_interval }}))
             done
             if [ "${ELAPSED}" -ge "${{ inputs.wait_timeout }}" ]; then
