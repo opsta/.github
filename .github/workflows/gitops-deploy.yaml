@@ -32,6 +32,13 @@ on:
         type: string
         default: .image.tag
         description: yq path of the tag field inside values_file_template.
+      extra_tag_paths:
+        type: string
+        default: ""
+        description: >-
+          Optional additional yq paths in the SAME values_file_template set to the same image_tag_value
+          (space/comma-separated, e.g. ".vars.APP_VERSION"). Use to surface the deployed tag to the app
+          as an env var so a version-aware acceptance gate (pull-wait) can confirm the new image is live.
       manifest_file_template:
         type: string
         default: ""
@@ -90,6 +97,13 @@ jobs:
               VF="${{ inputs.values_file_template }}"; VF="${VF//__SERVICE__/$SVC}"
               yq -i "${{ inputs.image_tag_path }} = \"${TAG}\"" "$VF"
               echo "values: $VF -> ${TAG}"
+              # Additional paths (e.g. .vars.APP_VERSION) bumped to the same unique tag so the app can
+              # report the deployed version for a pull-wait acceptance gate. Split on commas/whitespace.
+              for P in $(printf '%s' "${{ inputs.extra_tag_paths }}" | tr ', ' '\n\n'); do
+                [ -n "$P" ] || continue
+                yq -i "${P} = \"${TAG}\"" "$VF"
+                echo "values: $VF ${P} -> ${TAG}"
+              done
             fi
             if [ -n "${{ inputs.manifest_file_template }}" ] && [ -n "${{ inputs.image_name_template }}" ]; then
               MF="${{ inputs.manifest_file_template }}"; MF="${MF//__SERVICE__/$SVC}"
