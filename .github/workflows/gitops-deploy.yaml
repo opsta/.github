@@ -121,7 +121,11 @@ jobs:
           MSG="${{ inputs.commit_message }}"
           [ -n "$MSG" ] || MSG="ci: deploy ${{ inputs.image_tag_value }} [skip ci]"
           git commit -m "$MSG" || { echo "no changes to commit"; exit 0; }
+          pushed=0
           for i in 1 2 3 4 5; do
-            git push origin "HEAD:${{ inputs.gitops_branch }}" && break
+            if git push origin "HEAD:${{ inputs.gitops_branch }}"; then pushed=1; break; fi
             echo "push attempt $i failed; rebasing..."; git pull --rebase origin "${{ inputs.gitops_branch }}"
           done
+          # Fail loudly if every attempt failed — otherwise the loop ends and the step exits 0,
+          # reporting a green deploy that never committed the tag bump.
+          [ "$pushed" = 1 ] || { echo "::error::gitops push failed after retries"; exit 1; }
