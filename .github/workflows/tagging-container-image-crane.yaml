@@ -10,6 +10,16 @@ name: Reusable - Tag container image (crane, in-cluster)
 # can't resolve in-cluster registry hostnames; the kaniko build already runs in-cluster for the same
 # reason. On GKE the registry is public DNS (Artifact Registry), so either path works — the Job is
 # provider-neutral and lets crane reach AR via a Workload-Identity-bound ServiceAccount.
+#
+# CROSS-REGISTRY BRIDGE (v2.0 cross-provider promote): set `dst_image` to copy into a DIFFERENT
+# registry than the source (e.g. promote dev/uat on the k3d local registry → prd on Artifact
+# Registry, or AR → k3d). Source/destination auth are independent: `registry_username/password`
+# auth the SOURCE registry, `dst_registry_username/password` the DEST — both written into one docker
+# config (the `auths` map is keyed by registry host, so crane authenticates each side correctly in a
+# single copy). A side needing no auth (k3d local over HTTP, with registry_insecure) simply omits its
+# creds. When the centralized ARC runs on k3d (no Workload Identity), reach AR by passing a short-lived
+# AR token as dst basic auth (username `oauth2accesstoken`); the WI ServiceAccount path still works
+# when the ARC itself runs on GKE. dst_image defaults to `image` → unchanged single-registry behavior.
 
 on:
   workflow_call:
@@ -21,7 +31,13 @@ on:
       image:
         type: string
         required: true
-        description: Image ref WITHOUT tag.
+        description: Source image ref WITHOUT tag.
+      dst_image:
+        type: string
+        default: ""
+        description: >-
+          Destination image ref WITHOUT tag, for a cross-registry promote (e.g. AR ref when the source
+          is the k3d local registry). Empty = copy within `image` (back-compat, single registry).
       tag_from:
         type: string
         required: true
@@ -66,10 +82,16 @@ on:
     secrets:
       registry_username:
         required: false
-        description: Registry username for crane auth (when the registry requires basic auth).
+        description: SOURCE registry username for crane auth (when the source registry requires basic auth).
       registry_password:
         required: false
-        description: Registry password/token; presence mounts a docker config into the Job (DOCKER_CONFIG).
+        description: SOURCE registry password/token; presence mounts a docker config into the Job (DOCKER_CONFIG).
+      dst_registry_username:
+        required: false
+        description: DEST registry username (cross-registry promote; e.g. `oauth2accesstoken` for an AR token).
+      dst_registry_password:
+        required: false
+        description: DEST registry password/token; added to the same docker config under the dest registry host.
 
 jobs:
   retag:
@@ -86,18 +108,32 @@ jobs:
           chmod +x "$BIN/kubectl"
           echo "$BIN" >> "$GITHUB_PATH"
 
-      - name: Optional registry auth secret (basic auth → docker config)
+      - name: Optional registry auth secret (basic auth → docker config; source + dest)
         # NOTE: the `secrets` context is NOT allowed in a step-level `if:` (GitHub rejects it at
         # workflow load → caller startup_failure). Pass via env and check in the shell instead.
+        # Builds ONE docker config holding an entry per registry that has creds (source + dest),
+        # keyed by registry host → crane authenticates each side of a cross-registry copy correctly.
         env:
           REG_USER: ${{ secrets.registry_username }}
           REG_PASS: ${{ secrets.registry_password }}
+          DST_USER: ${{ secrets.dst_registry_username }}
+          DST_PASS: ${{ secrets.dst_registry_password }}
         run: |
           set -eu
-          [ -n "${REG_PASS:-}" ] || { echo "no registry password → skip auth secret"; exit 0; }
-          REGISTRY="${{ inputs.image }}"; REGISTRY="${REGISTRY%%/*}"
-          AUTH=$(printf '%s:%s' "$REG_USER" "$REG_PASS" | base64 -w0)
-          CFG=$(printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$AUTH")
+          ENTRIES=""
+          add_auth() {
+            HOST="$1"; U="$2"; P="$3"
+            [ -n "${P:-}" ] || return 0
+            A=$(printf '%s:%s' "$U" "$P" | base64 -w0)
+            ENTRIES="${ENTRIES:+$ENTRIES,}$(printf '"%s":{"auth":"%s"}' "$HOST" "$A")"
+          }
+          SRC_REG="${{ inputs.image }}"; SRC_REG="${SRC_REG%%/*}"
+          DST_IMG="${{ inputs.dst_image }}"; [ -n "$DST_IMG" ] || DST_IMG="${{ inputs.image }}"
+          DST_REG="${DST_IMG%%/*}"
+          add_auth "$SRC_REG" "$REG_USER" "$REG_PASS"
+          [ "$DST_REG" = "$SRC_REG" ] || add_auth "$DST_REG" "$DST_USER" "$DST_PASS"
+          [ -n "$ENTRIES" ] || { echo "no registry creds → skip auth secret"; exit 0; }
+          CFG="{\"auths\":{$ENTRIES}}"
           kubectl -n "$NS" create secret generic "$AUTH_SECRET" \
             --from-literal=config.json="$CFG" \
             --dry-run=client -o yaml | kubectl apply -f -
@@ -105,13 +141,15 @@ jobs:
       - name: Crane copy via in-cluster Job(s)
         env:
           REG_PASS: ${{ secrets.registry_password }}
+          DST_PASS: ${{ secrets.dst_registry_password }}
         run: |
           set -eu
           FLAGS_JSON=""
           [ "${{ inputs.registry_insecure }}" = "true" ] && FLAGS_JSON="\"--insecure\","
           SA_LINE=""; CRANE_IMG="${{ inputs.crane_image }}"; GCMD_ENV=""
+          DST_IMG="${{ inputs.dst_image }}"; [ -n "$DST_IMG" ] || DST_IMG="${{ inputs.image }}"
           HAS_AUTH=""
-          [ -n "${REG_PASS:-}" ] && HAS_AUTH=1
+          { [ -n "${REG_PASS:-}" ] || [ -n "${DST_PASS:-}" ]; } && HAS_AUTH=1
           if [ -n "${{ inputs.crane_service_account }}" ]; then
             SA_LINE="serviceAccountName: ${{ inputs.crane_service_account }}"
             # gcrane = crane with the Google keychain (GCR/Artifact Registry auth). Its Go ADC can't
@@ -132,14 +170,18 @@ jobs:
             JN="crane-$3-${{ github.run_id }}-${H}"
             echo "→ crane copy ${SRC} -> ${DST} (Job ${JN})"
             kubectl -n "$NS" delete job "${JN}" --ignore-not-found >/dev/null 2>&1 || true
-            ENV_LINE=""; VOL_MOUNT=""; VOL=""
+            # ENV is additive: a cross-registry copy can need BOTH a docker config (basic-auth side)
+            # AND the GCE metadata host (WI side) at once, so build the env list from whatever applies.
+            ENV_ITEMS=""; VOL_MOUNT=""; VOL=""
             if [ -n "$HAS_AUTH" ]; then
-              ENV_LINE='env: [{name: DOCKER_CONFIG, value: /dockercfg}]'
+              ENV_ITEMS="{name: DOCKER_CONFIG, value: /dockercfg}"
               VOL_MOUNT='volumeMounts: [{name: dockercfg, mountPath: /dockercfg, readOnly: true}]'
               VOL="volumes: [{name: dockercfg, secret: {secretName: ${AUTH_SECRET}, items: [{key: config.json, path: config.json}]}}]"
-            elif [ -n "$GCMD_ENV" ]; then
-              ENV_LINE='env: [{name: GCE_METADATA_HOST, value: "169.254.169.254"}]'
             fi
+            if [ -n "$GCMD_ENV" ]; then
+              ENV_ITEMS="${ENV_ITEMS:+$ENV_ITEMS, }{name: GCE_METADATA_HOST, value: \"169.254.169.254\"}"
+            fi
+            ENV_LINE=""; [ -n "$ENV_ITEMS" ] && ENV_LINE="env: [${ENV_ITEMS}]"
             cat <<YAML | kubectl apply -f -
           apiVersion: batch/v1
           kind: Job
@@ -173,11 +215,11 @@ jobs:
             kubectl -n "$NS" delete job "${JN}" --ignore-not-found
           }
 
-          run_copy "${{ inputs.image }}:${{ inputs.tag_from }}" "${{ inputs.image }}:${{ inputs.tag_to }}" "to"
-          echo "✓ ${{ inputs.image }}:${{ inputs.tag_from }} -> :${{ inputs.tag_to }}"
+          run_copy "${{ inputs.image }}:${{ inputs.tag_from }}" "${DST_IMG}:${{ inputs.tag_to }}" "to"
+          echo "✓ ${{ inputs.image }}:${{ inputs.tag_from }} -> ${DST_IMG}:${{ inputs.tag_to }}"
           if [ -n "${{ inputs.moving_tag }}" ]; then
-            run_copy "${{ inputs.image }}:${{ inputs.tag_to }}" "${{ inputs.image }}:${{ inputs.moving_tag }}" "mv"
-            echo "✓ ${{ inputs.image }}:${{ inputs.tag_to }} -> :${{ inputs.moving_tag }} (moving alias)"
+            run_copy "${DST_IMG}:${{ inputs.tag_to }}" "${DST_IMG}:${{ inputs.moving_tag }}" "mv"
+            echo "✓ ${DST_IMG}:${{ inputs.tag_to }} -> :${{ inputs.moving_tag }} (moving alias)"
           fi
 
       - name: Cleanup auth secret
