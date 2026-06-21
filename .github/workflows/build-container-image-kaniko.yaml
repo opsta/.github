@@ -87,6 +87,14 @@ on:
       git_token:
         required: true
         description: Token kaniko uses to clone the (private) git build context.
+      registry_username:
+        required: false
+        description: >-
+          Registry username for basic-auth push (e.g. a private Harbor robot account). Used only when
+          kaniko_service_account is empty; presence of registry_password mounts a docker config.
+      registry_password:
+        required: false
+        description: Registry password/token for basic-auth push; mounts a docker config so kaniko can push.
     outputs:
       image_digest:
         description: sha256 manifest digest of the pushed image (for immutable/digest pinning).
@@ -117,6 +125,9 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Submit kaniko build Job and wait
+        env:
+          REG_USER: ${{ secrets.registry_username }}
+          REG_PASS: ${{ secrets.registry_password }}
         run: |
           set -eu
           # Build the kaniko args as a single-line JSON array (YAML flow sequence)
@@ -161,6 +172,16 @@ jobs:
             # Wait (curl only, no gcloud/token) until the metadata token endpoint answers, THEN run kaniko
             # with its native credHelpers auth. Flow-style JSON to stay heredoc-indentation-proof.
             INIT_LINE='initContainers: [{"name":"wait-metadata","image":"curlimages/curl:8.9.1","command":["sh","-c"],"args":["i=0; until curl -sf -m 3 -H \"Metadata-Flavor: Google\" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 30 ] && echo metadata-never-ready && exit 1; echo waiting-metadata $i; sleep 2; done; echo metadata-ready"]}]'
+          elif [ -n "${REG_PASS:-}" ]; then
+            # Basic-auth registry (e.g. a private Harbor robot) — no Workload Identity. Build a docker
+            # config with the credentials so kaniko can push. Mutually exclusive with the WI SA path.
+            REG_HOST="$(printf '%s' '${{ inputs.image }}' | cut -d/ -f1)"
+            AUTH=$(printf '%s:%s' "${REG_USER:-}" "${REG_PASS}" | base64 -w0)
+            kubectl -n "$NS" create secret generic "$CFG_NAME" \
+              --from-literal=config.json="{\"auths\":{\"${REG_HOST}\":{\"auth\":\"${AUTH}\"}}}" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            VOL_LINE='volumes: [{"name":"docker-config","secret":{"secretName":"'"$CFG_NAME"'"}}]'
+            MOUNT_LINE='volumeMounts: [{"name":"docker-config","mountPath":"/kaniko/.docker/config.json","subPath":"config.json"}]'
           fi
           ENV_JSON="${ENV_JSON}]"
           cat <<YAML | kubectl apply -f -
