@@ -87,10 +87,12 @@ jobs:
           fi
           for APP in ${{ inputs.app_names }}; do
             echo "Refreshing ${APP}..."
-            curl -sf $K -H "${AUTH}" "${API}/${APP}?refresh=normal" >/dev/null
+            # Tolerate a transient refresh failure (|| true) — set -e would otherwise abort the whole job.
+            curl -sf $K -H "${AUTH}" "${API}/${APP}?refresh=normal" >/dev/null || true
             ELAPSED=0
             while [ "${ELAPSED}" -lt "${{ inputs.wait_timeout }}" ]; do
-              JSON=$(curl -sf $K -H "${AUTH}" "${API}/${APP}")
+              # A transient API blip (5xx/timeout) must NOT abort under set -e — sleep and retry the poll.
+              JSON=$(curl -sf $K -H "${AUTH}" "${API}/${APP}") || { echo "[${ELAPSED}s] ${APP}: status fetch failed; retrying"; sleep "${{ inputs.poll_interval }}"; ELAPSED=$((ELAPSED + ${{ inputs.poll_interval }})); continue; }
               SYNC=$(echo "${JSON}" | jq -r '.status.sync.status // "Unknown"')
               HEALTH=$(echo "${JSON}" | jq -r '.status.health.status // "Unknown"')
               REVISION=$(echo "${JSON}" | jq -r '.status.sync.revision // ""')
