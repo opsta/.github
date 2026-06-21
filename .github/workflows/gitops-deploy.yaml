@@ -44,10 +44,24 @@ on:
         type: string
         default: main
         description: Branch of the GitOps repo to check out, commit, and push the tag bump to.
+      gitops_repo:
+        type: string
+        default: ""
+        description: >-
+          Cross-repo target — the GitOps repo to bump (e.g. org/<service>-iac for the v2.0 src/IaC split).
+          Empty = the caller's own repo (back-compat, single-repo app). Cross-repo writes require the
+          gitops_token secret (a GitHub App installation token with contents:write on the target repo).
       commit_message:
         type: string
         default: ""
         description: Commit message for the tag bump; defaults to a generated 'ci deploy <tag> [skip ci]' message when empty.
+    secrets:
+      gitops_token:
+        required: false
+        description: >-
+          Token used to checkout AND push the GitOps repo. For cross-repo writes (gitops_repo set to a
+          separate <service>-iac repo) pass a GitHub App installation token with contents:write on it.
+          When omitted, falls back to the caller's GITHUB_TOKEN (works only for the caller's own repo).
 
 jobs:
   deploy:
@@ -57,7 +71,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          repository: ${{ inputs.gitops_repo || github.repository }}
           ref: ${{ inputs.gitops_branch }}
+          token: ${{ secrets.gitops_token || github.token }}
       - name: Install yq
         run: |
           set -eu
