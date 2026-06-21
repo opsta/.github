@@ -3,6 +3,10 @@ name: Reusable - Acceptance test (curl)
 # Polls a URL until the response body contains an expected string.
 # Mirrors versa-gitlab-cicd hidden-jobs/acceptance-test-curl.yaml (.acceptance-test-curl),
 # with a retry loop so it tolerates the post-sync rollout window.
+#
+# PULL-WAIT (edge ArgoCD): set expected_version to also gate on the new version being live, so the
+# check WAITS for the edge cluster's own ArgoCD to pull + roll out the promoted image — no argocd-sync
+# / no ArgoCD API token needed. Without it the poll can false-green against the old pod (same body).
 
 on:
   workflow_call:
@@ -19,6 +23,24 @@ on:
         type: string
         required: true
         description: Case-insensitive substring the response body must contain to pass.
+      expected_version:
+        type: string
+        default: ""
+        description: >-
+          Pull-wait gate for edge ArgoCD (no argocd-sync / no ArgoCD API): when set, the poll ALSO
+          requires the app to be serving THIS exact version (e.g. the unique promote tag <env>-<sha>)
+          before passing — so the check waits for the edge cluster's own ArgoCD to PULL + roll out the
+          new image, rather than false-greening against the old pod. Empty = acceptance_text only (back-compat).
+      version_url:
+        type: string
+        default: ""
+        description: Endpoint probed for expected_version (e.g. https://host/version). Empty = test_url.
+      version_header:
+        type: string
+        default: ""
+        description: >-
+          If set, read the version from this RESPONSE HEADER (e.g. X-App-Version) instead of the body.
+          Empty = match expected_version as a substring of the version_url body.
       retries:
         type: number
         default: 30
@@ -40,12 +62,25 @@ jobs:
         run: |
           set -eu
           K=""; [ "${{ inputs.curl_insecure }}" = "true" ] && K="-k"
-          for i in $(seq 1 ${{ inputs.retries }}); do
-            if curl -fsS $K "${{ inputs.test_url }}" | grep -qi "${{ inputs.acceptance_text }}"; then
-              echo "✓ acceptance OK: ${{ inputs.test_url }}"; exit 0
+          EXPV="${{ inputs.expected_version }}"
+          VHDR="${{ inputs.version_header }}"
+          VURL="${{ inputs.version_url }}"; [ -n "$VURL" ] || VURL="${{ inputs.test_url }}"
+          # version_live: 0 unless expected_version is set AND the app is serving it (body substring,
+          # or a response header when version_header is set). grep -F = fixed string (tags contain dots).
+          version_live() {
+            [ -n "$EXPV" ] || return 0          # no gate → always satisfied
+            if [ -n "$VHDR" ]; then
+              curl -fsS $K -D - -o /dev/null "$VURL" 2>/dev/null | grep -i "^${VHDR}:" | grep -qF "$EXPV"
+            else
+              curl -fsS $K "$VURL" 2>/dev/null | grep -qF "$EXPV"
             fi
-            echo "waiting ($i/${{ inputs.retries }}) for ${{ inputs.test_url }}"
+          }
+          for i in $(seq 1 ${{ inputs.retries }}); do
+            if curl -fsS $K "${{ inputs.test_url }}" | grep -qi "${{ inputs.acceptance_text }}" && version_live; then
+              echo "✓ acceptance OK: ${{ inputs.test_url }}${EXPV:+ (version ${EXPV} live)}"; exit 0
+            fi
+            echo "waiting ($i/${{ inputs.retries }}) for ${{ inputs.test_url }}${EXPV:+ @ ${EXPV}}"
             sleep ${{ inputs.retry_interval }}
           done
-          echo "::error title=acceptance failed::${{ inputs.test_url }} did not contain '${{ inputs.acceptance_text }}'"
+          echo "::error title=acceptance failed::${{ inputs.test_url }} did not contain '${{ inputs.acceptance_text }}'${EXPV:+ at version '${EXPV}'}"
           exit 1
