@@ -54,6 +54,9 @@ jobs:
     env:
       TRIVY_INSECURE: ${{ inputs.registry_insecure }}
       TRIVY_NON_SSL: ${{ inputs.registry_insecure }}
+      # Registry auth for self-hosted Zot (htpasswd) image scans on a dockerless ARC runner; empty for AR (WI keychain).
+      TRIVY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+      TRIVY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
       REPORT: ${{ inputs.report_name != '' && inputs.report_name || format('trivy-{0}', inputs.scan_type) }}
       IUF: ${{ inputs.ignore_unfixed && '--ignore-unfixed' || '' }}
       # image-scan on GKE pulls from Artifact Registry; trivy's Go ADC can't resolve
@@ -80,11 +83,11 @@ jobs:
           case "${{ inputs.scan_type }}" in
             image)  # Report-only: a registry pull/auth failure (e.g. the runner lacks
                     # read creds for a cloud registry) must not fail the pipeline.
-                    { trivy image --scanners vuln,misconfig,secret $IUF --exit-code 0 --severity "${{ inputs.severity }}" \
+                    { trivy image --image-src remote --scanners vuln,misconfig,secret $IUF --exit-code 0 --severity "${{ inputs.severity }}" \
                         --format table -o "reports/${REPORT}.txt" "${{ inputs.scan_ref }}" \
-                      && trivy image --scanners vuln,misconfig,secret $IUF --exit-code 0 --format json \
+                      && trivy image --image-src remote --scanners vuln,misconfig,secret $IUF --exit-code 0 --format json \
                         -o "reports/${REPORT}.json" "${{ inputs.scan_ref }}" ; } \
-                    || echo "::warning::trivy image scan could not complete (registry pull/auth?) — report-only, not failing the pipeline" ;;
+                    || echo "::warning::trivy image --image-src remote scan could not complete (registry pull/auth?) — report-only, not failing the pipeline" ;;
             config) trivy config --exit-code 0 --severity "${{ inputs.severity }}" \
                       --format table -o "reports/${REPORT}.txt" "${{ inputs.scan_ref }}"
                     trivy config --exit-code 0 --format json -o "reports/${REPORT}.json" "${{ inputs.scan_ref }}" ;;
@@ -143,7 +146,7 @@ jobs:
         run: |
           set -eu
           case "${{ inputs.scan_type }}" in
-            image)  trivy image  --exit-code 1 --severity "${{ inputs.fail_on_severity }}" $IUF --scanners vuln,misconfig,secret "${{ inputs.scan_ref }}" ;;
+            image)  trivy image --image-src remote  --exit-code 1 --severity "${{ inputs.fail_on_severity }}" $IUF --scanners vuln,misconfig,secret "${{ inputs.scan_ref }}" ;;
             config) trivy config --exit-code 1 --severity "${{ inputs.fail_on_severity }}" "${{ inputs.scan_ref }}" ;;
             secret) trivy fs --scanners secret --exit-code 1 "${{ inputs.scan_ref }}" ;;
             fs)     trivy fs --exit-code 1 --severity "${{ inputs.fail_on_severity }}" $IUF --scanners vuln,misconfig,secret "${{ inputs.scan_ref }}" ;;
