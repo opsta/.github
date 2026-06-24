@@ -1,0 +1,24 @@
+# Hardened UBI base image build -> scan -> CIS -> GHCR.
+# Starter template: calls the org reusable workflow. Edit the `images` list to
+# match your repo's base-images/<runtime>/Dockerfile.<role> layout.
+name: build-images
+
+on:
+  pull_request:
+    paths: [ 'base-images/**', 'scripts/**' ]
+  push:
+    branches: [ $default-branch ]
+    paths: [ 'base-images/**', 'scripts/**' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: opsta/.github/.github/workflows/ubi-image-build.yml@main
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+    with:
+      images: >-
+        [{"runtime":"nodejs-22-ubi9","role":"sdk","rh":"ubi9/nodejs-22"},
+         {"runtime":"nodejs-22-ubi9","role":"runtime","rh":"ubi9/nodejs-22-minimal"}]
